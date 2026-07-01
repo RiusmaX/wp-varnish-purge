@@ -47,6 +47,12 @@ PURGE https://example.com/*
 - WordPress multisite (5.2+), PHP 7.2+ with the cURL extension.
 - A Varnish front end that accepts the `PURGE` method from the origin server.
 
+## Translations
+
+The admin interface is fully translatable (text domain `varnish-network-purge`). A **French** translation is bundled (`languages/varnish-network-purge-fr_FR.po` / `.mo`): a WordPress site running in French shows French, any other locale falls back to the English source strings. A `.pot` template is included to add more languages.
+
+The token URL endpoint (curl / cron output) intentionally stays in English so scripts get deterministic, locale-independent responses.
+
 ## License
 
 GPL-2.0-or-later.

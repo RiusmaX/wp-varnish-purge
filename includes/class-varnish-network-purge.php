@@ -23,6 +23,9 @@ class Varnish_Network_Purge {
 	/** Prefix of the admin-notice network transient (suffixed with the user ID). */
 	const NOTICE_KEY = 'vnp_notice_';
 
+	/** Text domain used for translations. */
+	const TEXTDOMAIN = 'varnish-network-purge';
+
 	/** Minimum delay (seconds) between two purges of the same target via URL. */
 	const THROTTLE_SEC = 10;
 
@@ -42,6 +45,9 @@ class Varnish_Network_Purge {
 	}
 
 	private function __construct() {
+		// Load translations (French .mo shipped in /languages).
+		add_action( 'init', array( $this, 'load_textdomain' ), 1 );
+
 		// Token-protected URL trigger (front-end, any network domain).
 		add_action( 'init', array( $this, 'maybe_handle_url_purge' ) );
 
@@ -59,6 +65,14 @@ class Varnish_Network_Purge {
 		// Notices shown after a purge triggered from the admin.
 		add_action( 'admin_notices', array( $this, 'maybe_show_notice' ) );
 		add_action( 'network_admin_notices', array( $this, 'maybe_show_notice' ) );
+	}
+
+	public function load_textdomain() {
+		load_plugin_textdomain(
+			self::TEXTDOMAIN,
+			false,
+			dirname( plugin_basename( VNP_PLUGIN_FILE ) ) . '/languages'
+		);
 	}
 
 	/* --------------------------------------------------------------------- */
@@ -205,6 +219,9 @@ class Varnish_Network_Purge {
 
 	/* --------------------------------------------------------------------- */
 	/* Trigger: token-protected URL                                          */
+	/*                                                                       */
+	/* Machine-facing endpoint (curl / cron): responses are kept in English  */
+	/* on purpose so scripts get deterministic, locale-independent output.   */
 	/* --------------------------------------------------------------------- */
 
 	/**
@@ -263,8 +280,8 @@ class Varnish_Network_Purge {
 	public function add_network_menu() {
 		add_submenu_page(
 			'settings.php',
-			'Varnish Cache',
-			'Varnish Cache',
+			esc_html__( 'Varnish Cache', 'varnish-network-purge' ),
+			esc_html__( 'Varnish Cache', 'varnish-network-purge' ),
 			'manage_network',
 			'varnish-purge',
 			array( $this, 'render_network_page' )
@@ -278,24 +295,35 @@ class Varnish_Network_Purge {
 		$example_host = ! empty( $hosts ) ? reset( $hosts ) : 'example.com';
 		?>
 		<div class="wrap">
-			<h1>Varnish Cache — Network</h1>
+			<h1><?php esc_html_e( 'Varnish Cache — Network', 'varnish-network-purge' ); ?></h1>
 
-			<h2>Global purge</h2>
-			<p>Purge the Varnish cache of all <strong><?php echo count( $hosts ); ?> network domains</strong> at once.</p>
+			<h2><?php esc_html_e( 'Global purge', 'varnish-network-purge' ); ?></h2>
+			<p>
+			<?php
+			printf(
+				wp_kses(
+					/* translators: %d: number of network domains */
+					__( 'Purge the Varnish cache of all <strong>%d network domains</strong> at once.', 'varnish-network-purge' ),
+					array( 'strong' => array() )
+				),
+				count( $hosts )
+			);
+			?>
+			</p>
 			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 				<input type="hidden" name="action" value="vnp_purge_all" />
 				<?php wp_nonce_field( 'vnp_purge_all' ); ?>
-				<?php submit_button( 'Purge all Varnish cache', 'primary large' ); ?>
+				<?php submit_button( __( 'Purge all Varnish cache', 'varnish-network-purge' ), 'primary large' ); ?>
 			</form>
 
 			<hr />
 
-			<h2>Per-site purge (<?php echo count( $hosts ); ?>)</h2>
+			<h2><?php printf( esc_html__( 'Per-site purge (%d)', 'varnish-network-purge' ), count( $hosts ) ); ?></h2>
 			<table class="widefat striped" style="max-width:820px;">
 				<thead>
 					<tr>
-						<th>Domain</th>
-						<th style="width:140px;">Action</th>
+						<th><?php esc_html_e( 'Domain', 'varnish-network-purge' ); ?></th>
+						<th style="width:140px;"><?php esc_html_e( 'Action', 'varnish-network-purge' ); ?></th>
 					</tr>
 				</thead>
 				<tbody>
@@ -309,7 +337,7 @@ class Varnish_Network_Purge {
 									<input type="hidden" name="action" value="vnp_purge_site" />
 									<input type="hidden" name="host" value="<?php echo esc_attr( $host ); ?>" />
 									<?php wp_nonce_field( 'vnp_purge_site' ); ?>
-									<?php submit_button( 'Purge', 'secondary small', 'submit', false ); ?>
+									<?php submit_button( __( 'Purge', 'varnish-network-purge' ), 'secondary small', 'submit', false ); ?>
 								</form>
 							</td>
 						</tr>
@@ -319,22 +347,35 @@ class Varnish_Network_Purge {
 
 			<hr />
 
-			<h2>URL trigger</h2>
-			<p>URL to call (curl, bookmark, scheduled task). <strong>Keep it secret.</strong></p>
+			<h2><?php esc_html_e( 'URL trigger', 'varnish-network-purge' ); ?></h2>
+			<p>
+				<?php esc_html_e( 'URL to call (curl, bookmark, scheduled task).', 'varnish-network-purge' ); ?>
+				<strong><?php esc_html_e( 'Keep it secret.', 'varnish-network-purge' ); ?></strong>
+			</p>
 			<p>
 				<input type="text" readonly onclick="this.select();" style="width:100%;max-width:820px;"
 					value="<?php echo esc_attr( $purge_url ); ?>" />
 			</p>
 			<p><code>curl -s "<?php echo esc_html( $purge_url ); ?>"</code></p>
 
-			<p>To purge <strong>a single site</strong>, append <code>&amp;host=DOMAIN</code>:</p>
+			<p>
+			<?php
+			echo wp_kses(
+				__( 'To purge <strong>a single site</strong>, append <code>&amp;host=DOMAIN</code>:', 'varnish-network-purge' ),
+				array(
+					'strong' => array(),
+					'code'   => array(),
+				)
+			);
+			?>
+			</p>
 			<p><code>curl -s "<?php echo esc_html( add_query_arg( 'host', $example_host, $purge_url ) ); ?>"</code></p>
 
 			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"
-				onsubmit="return confirm('Regenerate the token? Existing URLs will stop working.');">
+				onsubmit="return confirm('<?php echo esc_js( __( 'Regenerate the token? Existing URLs will stop working.', 'varnish-network-purge' ) ); ?>');">
 				<input type="hidden" name="action" value="vnp_regen_token" />
 				<?php wp_nonce_field( 'vnp_regen_token' ); ?>
-				<?php submit_button( 'Regenerate token', 'secondary', 'submit', false ); ?>
+				<?php submit_button( __( 'Regenerate token', 'varnish-network-purge' ), 'secondary', 'submit', false ); ?>
 			</form>
 		</div>
 		<?php
@@ -342,24 +383,24 @@ class Varnish_Network_Purge {
 
 	public function handle_purge_all() {
 		if ( ! current_user_can( 'manage_network' ) ) {
-			wp_die( 'Action not allowed.' );
+			wp_die( esc_html__( 'Action not allowed.', 'varnish-network-purge' ) );
 		}
 		check_admin_referer( 'vnp_purge_all' );
 
 		$results = $this->purge_all();
-		$this->stash_notice( $results, 'the whole network' );
+		$this->stash_notice( $results, __( 'the whole network', 'varnish-network-purge' ) );
 		$this->redirect_back();
 	}
 
 	public function handle_purge_site() {
 		if ( ! current_user_can( 'manage_network' ) ) {
-			wp_die( 'Action not allowed.' );
+			wp_die( esc_html__( 'Action not allowed.', 'varnish-network-purge' ) );
 		}
 		check_admin_referer( 'vnp_purge_site' );
 
 		$host = isset( $_POST['host'] ) ? trim( wp_unslash( $_POST['host'] ) ) : '';
 		if ( ! in_array( $host, $this->get_network_hosts(), true ) ) {
-			wp_die( 'Unknown domain.' );
+			wp_die( esc_html__( 'Unknown domain.', 'varnish-network-purge' ) );
 		}
 
 		$results = $this->purge_urls( array( 'https://' . $host . '/' ) );
@@ -369,7 +410,7 @@ class Varnish_Network_Purge {
 
 	public function handle_regen_token() {
 		if ( ! current_user_can( 'manage_network' ) ) {
-			wp_die( 'Action not allowed.' );
+			wp_die( esc_html__( 'Action not allowed.', 'varnish-network-purge' ) );
 		}
 		check_admin_referer( 'vnp_regen_token' );
 
@@ -383,8 +424,8 @@ class Varnish_Network_Purge {
 
 	public function add_site_menu() {
 		add_options_page(
-			'Varnish Cache',
-			'Varnish Cache',
+			esc_html__( 'Varnish Cache', 'varnish-network-purge' ),
+			esc_html__( 'Varnish Cache', 'varnish-network-purge' ),
 			'manage_options',
 			'varnish-purge',
 			array( $this, 'render_site_page' )
@@ -394,12 +435,20 @@ class Varnish_Network_Purge {
 	public function render_site_page() {
 		?>
 		<div class="wrap">
-			<h1>Varnish Cache</h1>
-			<p>Purge this site's Varnish cache: <strong><?php echo esc_html( $this->current_host() ); ?></strong></p>
+			<h1><?php esc_html_e( 'Varnish Cache', 'varnish-network-purge' ); ?></h1>
+			<p>
+			<?php
+			printf(
+				/* translators: %s: current site host */
+				esc_html__( "Purge this site's Varnish cache: %s", 'varnish-network-purge' ),
+				'<strong>' . esc_html( $this->current_host() ) . '</strong>'
+			);
+			?>
+			</p>
 			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 				<input type="hidden" name="action" value="vnp_purge_current" />
 				<?php wp_nonce_field( 'vnp_purge_current' ); ?>
-				<?php submit_button( "Purge this site's cache", 'primary large' ); ?>
+				<?php submit_button( __( "Purge this site's cache", 'varnish-network-purge' ), 'primary large' ); ?>
 			</form>
 		</div>
 		<?php
@@ -407,7 +456,7 @@ class Varnish_Network_Purge {
 
 	public function handle_purge_current() {
 		if ( ! current_user_can( 'manage_options' ) ) {
-			wp_die( 'Action not allowed.' );
+			wp_die( esc_html__( 'Action not allowed.', 'varnish-network-purge' ) );
 		}
 		check_admin_referer( 'vnp_purge_current' );
 
@@ -434,16 +483,16 @@ class Varnish_Network_Purge {
 
 		$wp_admin_bar->add_node( array(
 			'id'    => 'vnp',
-			'title' => '<span class="ab-icon dashicons dashicons-update" style="font-family:dashicons;top:2px;"></span>' . esc_html( 'Varnish Cache' ),
+			'title' => '<span class="ab-icon dashicons dashicons-update" style="font-family:dashicons;top:2px;"></span>' . esc_html__( 'Varnish Cache', 'varnish-network-purge' ),
 			'href'  => $root_href,
-			'meta'  => array( 'title' => 'Varnish cache purge' ),
+			'meta'  => array( 'title' => esc_attr__( 'Varnish cache purge', 'varnish-network-purge' ) ),
 		) );
 
 		if ( $can_site ) {
 			$wp_admin_bar->add_node( array(
 				'parent' => 'vnp',
 				'id'     => 'vnp-site',
-				'title'  => 'Purge this site',
+				'title'  => esc_html__( 'Purge this site', 'varnish-network-purge' ),
 				'href'   => wp_nonce_url( admin_url( 'admin-post.php?action=vnp_purge_current' ), 'vnp_purge_current' ),
 			) );
 		}
@@ -452,7 +501,7 @@ class Varnish_Network_Purge {
 			$wp_admin_bar->add_node( array(
 				'parent' => 'vnp',
 				'id'     => 'vnp-all',
-				'title'  => 'Purge the whole network',
+				'title'  => esc_html__( 'Purge the whole network', 'varnish-network-purge' ),
 				'href'   => wp_nonce_url( admin_url( 'admin-post.php?action=vnp_purge_all' ), 'vnp_purge_all' ),
 			) );
 		}
@@ -466,7 +515,7 @@ class Varnish_Network_Purge {
 	 * Store a purge result for the current user.
 	 *
 	 * @param array[] $results     Purge results.
-	 * @param string  $scope_label Target label.
+	 * @param string  $scope_label Target label (already translated when relevant).
 	 */
 	private function stash_notice( array $results, $scope_label ) {
 		$ok = count( array_filter( $results, function ( $r ) { return $r['ok']; } ) );
@@ -485,13 +534,18 @@ class Varnish_Network_Purge {
 		}
 		delete_site_transient( $key );
 
-		$class = ( $notice['total'] > 0 && $notice['ok'] === $notice['total'] ) ? 'notice-success' : 'notice-warning';
-		printf(
-			'<div class="notice %s is-dismissible"><p><strong>Varnish cache purged — %s.</strong> %d / %d PURGE requests succeeded.</p></div>',
-			esc_attr( $class ),
-			esc_html( $notice['scope'] ),
+		$class   = ( $notice['total'] > 0 && $notice['ok'] === $notice['total'] ) ? 'notice-success' : 'notice-warning';
+		$message = sprintf(
+			/* translators: 1: target label, 2: successful requests, 3: total requests */
+			__( 'Varnish cache purged — %1$s. %2$d / %3$d PURGE requests succeeded.', 'varnish-network-purge' ),
+			$notice['scope'],
 			(int) $notice['ok'],
 			(int) $notice['total']
+		);
+		printf(
+			'<div class="notice %s is-dismissible"><p><strong>%s</strong></p></div>',
+			esc_attr( $class ),
+			esc_html( $message )
 		);
 	}
 
