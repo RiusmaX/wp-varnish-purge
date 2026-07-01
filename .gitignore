@@ -1,0 +1,11 @@
+# OS / éditeurs
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Dépendances / build éventuels
+node_modules/
+vendor/
