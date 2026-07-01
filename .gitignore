@@ -1,4 +1,4 @@
-# OS / éditeurs
+# OS / editors
 .DS_Store
 Thumbs.db
 *.swp
@@ -6,6 +6,6 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Dépendances / build éventuels
+# Dependencies / build (if any)
 node_modules/
 vendor/

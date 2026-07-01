@@ -1,52 +1,52 @@
 # Varnish Network Purge
 
-Plugin WordPress **multisite** pour vider le cache **Varnish** de tous les sites du réseau — ou d'un seul — sans passer par la ligne de commande.
+WordPress **multisite** plugin to purge the **Varnish** cache of every site in the network — or just one — without touching the command line.
 
-Conçu pour un réseau multisite en **domain mapping** hébergé derrière Varnish (ex. Infomaniak), où chaque site possède son propre domaine. La liste des domaines est récupérée **dynamiquement** via `get_sites()` : tout nouveau site du réseau est pris en charge automatiquement.
+Built for a multisite network with **domain mapping** sitting behind Varnish (e.g. Infomaniak), where each site has its own domain. The list of domains is fetched **dynamically** via `get_sites()`, so any new network site is handled automatically.
 
-## Fonctionnalités
+## Features
 
-- **Admin Réseau** (`Réseau → Réglages → Cache Varnish`)
-  - Purge globale de tous les domaines du réseau en une passe.
-  - Purge site par site (tableau listant chaque domaine).
-  - URL secrète (jeton) régénérable.
-- **Réglages du site** (`Réglages → Cache Varnish`)
-  - Bouton de purge du **site courant** uniquement (accessible aux administrateurs de site, capacité `manage_options`).
-- **Barre d'administration** (topbar)
-  - Raccourci « Cache Varnish » avec *Purger ce site* et, pour les super-admins, *Purger tout le réseau*.
-- **Déclenchement par URL** (curl / cron / marque-page)
-  - `https://exemple.com/?varnish_purge=JETON` → purge tout le réseau.
-  - `…&host=DOMAINE` → purge un seul site.
+- **Network admin** (`Network → Settings → Varnish Cache`)
+  - Global purge of every network domain in one pass.
+  - Per-site purge (a table listing each domain).
+  - Secret URL (token), regenerable.
+- **Site settings** (`Settings → Varnish Cache`)
+  - Button to purge the **current site** only (available to site administrators, `manage_options` capability).
+- **Admin bar** (top bar)
+  - "Varnish Cache" shortcut with *Purge this site* and, for super admins, *Purge the whole network*.
+- **URL trigger** (curl / cron / bookmark)
+  - `https://example.com/?varnish_purge=TOKEN` → purge the whole network.
+  - `…&host=DOMAIN` → purge a single site.
 
-## Fonctionnement
+## How it works
 
-Pour chaque cible, le plugin envoie en parallèle (`curl_multi`) deux requêtes HTTP `PURGE` :
+For each target, the plugin sends two `PURGE` HTTP requests in parallel (`curl_multi`):
 
 ```
-PURGE https://exemple.com/
-PURGE https://exemple.com/*
+PURGE https://example.com/
+PURGE https://example.com/*
 ```
 
-`/*` couvre l'ensemble du site (y compris les sous-sites en sous-dossier partageant le domaine).
+`/*` covers the whole site (including subdirectory sub-sites that share the domain).
 
-## Sécurité
+## Security
 
-- Purges en back-office : capacités WordPress + nonce.
-  - Purge globale / par site / régénération du jeton : `manage_network` (super-admin).
-  - Purge du site courant : `manage_options` (admin de site).
-- Endpoint URL : jeton secret comparé en `hash_equals` (anti-timing), en-têtes `nocache`, et **limitation par cible** (10 s entre deux purges d'une même cible) pour éviter le *cache stampede*.
+- Back-office purges: WordPress capabilities + nonce.
+  - Global / per-site purge and token regeneration: `manage_network` (super admin).
+  - Current-site purge: `manage_options` (site administrator).
+- URL endpoint: secret token compared with `hash_equals` (timing-safe), `nocache` headers, and a **per-target throttle** (10 s between two purges of the same target) to avoid a *cache stampede*.
 
 ## Installation
 
-1. Copier le dossier `varnish-network-purge/` dans `wp-content/plugins/`.
-2. Dans l'admin **Réseau → Extensions**, cliquer sur **Activer sur le réseau**.
-3. Ouvrir **Réseau → Réglages → Cache Varnish** pour récupérer l'URL/jeton.
+1. Copy the `varnish-network-purge/` folder into `wp-content/plugins/`.
+2. In **Network Admin → Plugins**, click **Network Activate**.
+3. Open **Network → Settings → Varnish Cache** to grab the URL/token.
 
-## Prérequis
+## Requirements
 
-- WordPress multisite (5.2+), PHP 7.2+ avec l'extension cURL.
-- Un frontal Varnish acceptant la méthode `PURGE` depuis le serveur d'origine.
+- WordPress multisite (5.2+), PHP 7.2+ with the cURL extension.
+- A Varnish front end that accepts the `PURGE` method from the origin server.
 
-## Licence
+## License
 
 GPL-2.0-or-later.

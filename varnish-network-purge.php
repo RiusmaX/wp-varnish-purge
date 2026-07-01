@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Varnish Network Purge
  * Plugin URI:        https://github.com/RiusmaX/wp-varnish-purge
- * Description:       Vide le cache Varnish d'un réseau multisite WordPress : purge globale ou par site depuis l'admin Réseau, purge du site courant depuis ses réglages et depuis la barre d'admin, et déclenchement par URL protégée par jeton (curl / cron).
+ * Description:       Purge the Varnish cache of a WordPress multisite network: purge the whole network or a single site from the Network admin, purge the current site from its own settings and from the admin bar, and trigger purges through a token-protected URL (curl / cron).
  * Version:           1.0.0
  * Requires at least: 5.2
  * Requires PHP:      7.2
@@ -25,5 +25,5 @@ define( 'VNP_PLUGIN_FILE', __FILE__ );
 
 require_once __DIR__ . '/includes/class-varnish-network-purge.php';
 
-// Démarrage.
+// Bootstrap.
 add_action( 'plugins_loaded', array( 'Varnish_Network_Purge', 'instance' ) );

@@ -1,6 +1,6 @@
 <?php
 /**
- * Classe principale du plugin Varnish Network Purge.
+ * Main class for the Varnish Network Purge plugin.
  *
  * @package VarnishNetworkPurge
  */
@@ -11,26 +11,26 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class Varnish_Network_Purge {
 
-	/** Option réseau contenant le jeton secret. */
+	/** Network option holding the secret token. */
 	const OPTION_TOKEN = 'varnish_purge_token';
 
-	/** Paramètre d'URL déclenchant la purge. */
+	/** URL parameter that triggers the purge. */
 	const QUERY_VAR = 'varnish_purge';
 
-	/** Préfixe du transient réseau de limitation (suivi de la cible). */
+	/** Prefix of the throttle network transient (suffixed with the target). */
 	const THROTTLE_KEY = 'vnp_last_run_';
 
-	/** Préfixe du transient réseau d'avis d'admin (suivi de l'ID utilisateur). */
+	/** Prefix of the admin-notice network transient (suffixed with the user ID). */
 	const NOTICE_KEY = 'vnp_notice_';
 
-	/** Délai minimum (secondes) entre deux purges d'une même cible via URL. */
+	/** Minimum delay (seconds) between two purges of the same target via URL. */
 	const THROTTLE_SEC = 10;
 
 	/** @var Varnish_Network_Purge|null */
 	private static $instance = null;
 
 	/**
-	 * Point d'entrée unique.
+	 * Single entry point.
 	 *
 	 * @return Varnish_Network_Purge
 	 */
@@ -42,31 +42,31 @@ class Varnish_Network_Purge {
 	}
 
 	private function __construct() {
-		// Déclencheur URL protégé par jeton (front, tout domaine du réseau).
+		// Token-protected URL trigger (front-end, any network domain).
 		add_action( 'init', array( $this, 'maybe_handle_url_purge' ) );
 
-		// Interfaces d'administration.
+		// Admin screens.
 		add_action( 'network_admin_menu', array( $this, 'add_network_menu' ) );
 		add_action( 'admin_menu', array( $this, 'add_site_menu' ) );
 		add_action( 'admin_bar_menu', array( $this, 'add_admin_bar' ), 100 );
 
-		// Handlers d'action (formulaires + liens de la barre d'admin).
+		// Action handlers (forms + admin-bar links).
 		add_action( 'admin_post_vnp_purge_all', array( $this, 'handle_purge_all' ) );
 		add_action( 'admin_post_vnp_purge_site', array( $this, 'handle_purge_site' ) );
 		add_action( 'admin_post_vnp_purge_current', array( $this, 'handle_purge_current' ) );
 		add_action( 'admin_post_vnp_regen_token', array( $this, 'handle_regen_token' ) );
 
-		// Avis affichés après une purge déclenchée depuis l'admin.
+		// Notices shown after a purge triggered from the admin.
 		add_action( 'admin_notices', array( $this, 'maybe_show_notice' ) );
 		add_action( 'network_admin_notices', array( $this, 'maybe_show_notice' ) );
 	}
 
 	/* --------------------------------------------------------------------- */
-	/* Cœur : cibles + envoi des PURGE                                       */
+	/* Core: targets + sending PURGE requests                                */
 	/* --------------------------------------------------------------------- */
 
 	/**
-	 * Récupère (ou génère) le jeton secret partagé par le réseau.
+	 * Get (or generate) the secret token shared across the network.
 	 *
 	 * @return string
 	 */
@@ -80,9 +80,8 @@ class Varnish_Network_Purge {
 	}
 
 	/**
-	 * Liste des domaines uniques du réseau (déduplication sur l'hôte : les
-	 * sites en sous-dossier partagent le même domaine et sont couverts par la
-	 * purge « /* » de leur hôte).
+	 * List of unique network domains (deduplicated by host: subdirectory sites
+	 * share the same domain and are covered by the "/*" purge of their host).
 	 *
 	 * @return string[]
 	 */
@@ -94,7 +93,7 @@ class Varnish_Network_Purge {
 		}
 
 		$sites = get_sites( array(
-			'number'   => 0, // 0 = pas de limite (tous les sites).
+			'number'   => 0, // 0 = no limit (all sites).
 			'deleted'  => 0,
 			'archived' => 0,
 			'spam'     => 0,
@@ -111,7 +110,7 @@ class Varnish_Network_Purge {
 	}
 
 	/**
-	 * Base d'URL (avec slash final) du site courant.
+	 * Current site's base URL (with trailing slash).
 	 *
 	 * @return string
 	 */
@@ -120,7 +119,7 @@ class Varnish_Network_Purge {
 	}
 
 	/**
-	 * Hôte du site courant (pour affichage / libellés).
+	 * Current site's host (for display / labels).
 	 *
 	 * @return string
 	 */
@@ -130,7 +129,7 @@ class Varnish_Network_Purge {
 	}
 
 	/**
-	 * Purge l'ensemble des domaines du réseau.
+	 * Purge every network domain.
 	 *
 	 * @return array[]
 	 */
@@ -143,11 +142,11 @@ class Varnish_Network_Purge {
 	}
 
 	/**
-	 * Envoie une requête PURGE sur chaque base fournie ainsi que sur son
-	 * joker « <base>* », en parallèle via curl_multi.
+	 * Send a PURGE request to each provided base as well as to its wildcard
+	 * "<base>*", in parallel via curl_multi.
 	 *
-	 * @param string[] $bases Bases d'URL (ex. https://exemple.com/ ou https://exemple.com/sous-site/).
-	 * @return array[] Liste de résultats { url, code, ok, err }.
+	 * @param string[] $bases Base URLs (e.g. https://example.com/ or https://example.com/subsite/).
+	 * @return array[] List of results { url, code, ok, err }.
 	 */
 	private function purge_urls( array $bases ) {
 		$results = array();
@@ -205,12 +204,12 @@ class Varnish_Network_Purge {
 	}
 
 	/* --------------------------------------------------------------------- */
-	/* Déclencheur : URL protégée par jeton                                  */
+	/* Trigger: token-protected URL                                          */
 	/* --------------------------------------------------------------------- */
 
 	/**
-	 * Réseau  : https://exemple.com/?varnish_purge=JETON
-	 * Un site : https://exemple.com/?varnish_purge=JETON&host=sous-site.exemple.com
+	 * Network     : https://example.com/?varnish_purge=TOKEN
+	 * Single site : https://example.com/?varnish_purge=TOKEN&host=sub.example.com
 	 */
 	public function maybe_handle_url_purge() {
 		if ( ! isset( $_GET[ self::QUERY_VAR ] ) ) {
@@ -225,25 +224,25 @@ class Varnish_Network_Purge {
 
 		if ( ! hash_equals( $token, $provided ) ) {
 			status_header( 403 );
-			echo "403 - Jeton invalide.";
+			echo "403 - Invalid token.";
 			exit;
 		}
 
-		// Cible : un site précis via &host=... , sinon tout le réseau.
+		// Target: a specific site via &host=... , otherwise the whole network.
 		$target = isset( $_GET['host'] ) ? trim( wp_unslash( $_GET['host'] ) ) : '';
 		if ( '' !== $target && ! in_array( $target, $this->get_network_hosts(), true ) ) {
 			status_header( 404 );
-			echo "404 - Domaine inconnu dans le reseau.";
+			echo "404 - Unknown domain in the network.";
 			exit;
 		}
 
-		// Limitation par cible : évite les purges en rafale (cache stampede).
+		// Per-target throttle: prevents burst purges (cache stampede).
 		$throttle_key = self::THROTTLE_KEY . md5( '' !== $target ? $target : 'all' );
 		$last         = (int) get_site_transient( $throttle_key );
 		if ( $last && ( time() - $last ) < self::THROTTLE_SEC ) {
 			$wait = self::THROTTLE_SEC - ( time() - $last );
 			status_header( 429 );
-			echo "429 - Une purge vient d'etre effectuee. Reessayez dans {$wait}s.";
+			echo "429 - A purge was just performed. Retry in {$wait}s.";
 			exit;
 		}
 		set_site_transient( $throttle_key, time(), self::THROTTLE_SEC );
@@ -258,14 +257,14 @@ class Varnish_Network_Purge {
 	}
 
 	/* --------------------------------------------------------------------- */
-	/* Admin Réseau : purge globale + purge par site + jeton                 */
+	/* Network admin: global purge + per-site purge + token                  */
 	/* --------------------------------------------------------------------- */
 
 	public function add_network_menu() {
 		add_submenu_page(
 			'settings.php',
-			'Cache Varnish',
-			'Cache Varnish',
+			'Varnish Cache',
+			'Varnish Cache',
 			'manage_network',
 			'varnish-purge',
 			array( $this, 'render_network_page' )
@@ -276,26 +275,26 @@ class Varnish_Network_Purge {
 		$token        = $this->get_token();
 		$purge_url    = add_query_arg( self::QUERY_VAR, $token, network_home_url( '/' ) );
 		$hosts        = $this->get_network_hosts();
-		$example_host = ! empty( $hosts ) ? reset( $hosts ) : 'exemple.com';
+		$example_host = ! empty( $hosts ) ? reset( $hosts ) : 'example.com';
 		?>
 		<div class="wrap">
-			<h1>Cache Varnish — Réseau</h1>
+			<h1>Varnish Cache — Network</h1>
 
-			<h2>Purge globale</h2>
-			<p>Purge le cache Varnish des <strong><?php echo count( $hosts ); ?> domaines</strong> du réseau en une fois.</p>
+			<h2>Global purge</h2>
+			<p>Purge the Varnish cache of all <strong><?php echo count( $hosts ); ?> network domains</strong> at once.</p>
 			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 				<input type="hidden" name="action" value="vnp_purge_all" />
 				<?php wp_nonce_field( 'vnp_purge_all' ); ?>
-				<?php submit_button( 'Vider tout le cache Varnish', 'primary large' ); ?>
+				<?php submit_button( 'Purge all Varnish cache', 'primary large' ); ?>
 			</form>
 
 			<hr />
 
-			<h2>Purge par site (<?php echo count( $hosts ); ?>)</h2>
+			<h2>Per-site purge (<?php echo count( $hosts ); ?>)</h2>
 			<table class="widefat striped" style="max-width:820px;">
 				<thead>
 					<tr>
-						<th>Domaine</th>
+						<th>Domain</th>
 						<th style="width:140px;">Action</th>
 					</tr>
 				</thead>
@@ -310,7 +309,7 @@ class Varnish_Network_Purge {
 									<input type="hidden" name="action" value="vnp_purge_site" />
 									<input type="hidden" name="host" value="<?php echo esc_attr( $host ); ?>" />
 									<?php wp_nonce_field( 'vnp_purge_site' ); ?>
-									<?php submit_button( 'Purger', 'secondary small', 'submit', false ); ?>
+									<?php submit_button( 'Purge', 'secondary small', 'submit', false ); ?>
 								</form>
 							</td>
 						</tr>
@@ -320,22 +319,22 @@ class Varnish_Network_Purge {
 
 			<hr />
 
-			<h2>Déclenchement par URL</h2>
-			<p>URL à appeler (curl, marque-page, tâche planifiée). <strong>À garder secrète.</strong></p>
+			<h2>URL trigger</h2>
+			<p>URL to call (curl, bookmark, scheduled task). <strong>Keep it secret.</strong></p>
 			<p>
 				<input type="text" readonly onclick="this.select();" style="width:100%;max-width:820px;"
 					value="<?php echo esc_attr( $purge_url ); ?>" />
 			</p>
 			<p><code>curl -s "<?php echo esc_html( $purge_url ); ?>"</code></p>
 
-			<p>Pour purger <strong>un seul site</strong>, ajoutez <code>&amp;host=DOMAINE</code> :</p>
+			<p>To purge <strong>a single site</strong>, append <code>&amp;host=DOMAIN</code>:</p>
 			<p><code>curl -s "<?php echo esc_html( add_query_arg( 'host', $example_host, $purge_url ) ); ?>"</code></p>
 
 			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"
-				onsubmit="return confirm('Régénérer le jeton ? Les anciennes URL cesseront de fonctionner.');">
+				onsubmit="return confirm('Regenerate the token? Existing URLs will stop working.');">
 				<input type="hidden" name="action" value="vnp_regen_token" />
 				<?php wp_nonce_field( 'vnp_regen_token' ); ?>
-				<?php submit_button( 'Régénérer le jeton', 'secondary', 'submit', false ); ?>
+				<?php submit_button( 'Regenerate token', 'secondary', 'submit', false ); ?>
 			</form>
 		</div>
 		<?php
@@ -343,24 +342,24 @@ class Varnish_Network_Purge {
 
 	public function handle_purge_all() {
 		if ( ! current_user_can( 'manage_network' ) ) {
-			wp_die( 'Action non autorisée.' );
+			wp_die( 'Action not allowed.' );
 		}
 		check_admin_referer( 'vnp_purge_all' );
 
 		$results = $this->purge_all();
-		$this->stash_notice( $results, 'tout le réseau' );
+		$this->stash_notice( $results, 'the whole network' );
 		$this->redirect_back();
 	}
 
 	public function handle_purge_site() {
 		if ( ! current_user_can( 'manage_network' ) ) {
-			wp_die( 'Action non autorisée.' );
+			wp_die( 'Action not allowed.' );
 		}
 		check_admin_referer( 'vnp_purge_site' );
 
 		$host = isset( $_POST['host'] ) ? trim( wp_unslash( $_POST['host'] ) ) : '';
 		if ( ! in_array( $host, $this->get_network_hosts(), true ) ) {
-			wp_die( 'Domaine inconnu.' );
+			wp_die( 'Unknown domain.' );
 		}
 
 		$results = $this->purge_urls( array( 'https://' . $host . '/' ) );
@@ -370,7 +369,7 @@ class Varnish_Network_Purge {
 
 	public function handle_regen_token() {
 		if ( ! current_user_can( 'manage_network' ) ) {
-			wp_die( 'Action non autorisée.' );
+			wp_die( 'Action not allowed.' );
 		}
 		check_admin_referer( 'vnp_regen_token' );
 
@@ -379,13 +378,13 @@ class Varnish_Network_Purge {
 	}
 
 	/* --------------------------------------------------------------------- */
-	/* Admin du site : purge du site courant via ses réglages                */
+	/* Site admin: purge the current site from its settings                  */
 	/* --------------------------------------------------------------------- */
 
 	public function add_site_menu() {
 		add_options_page(
-			'Cache Varnish',
-			'Cache Varnish',
+			'Varnish Cache',
+			'Varnish Cache',
 			'manage_options',
 			'varnish-purge',
 			array( $this, 'render_site_page' )
@@ -395,12 +394,12 @@ class Varnish_Network_Purge {
 	public function render_site_page() {
 		?>
 		<div class="wrap">
-			<h1>Cache Varnish</h1>
-			<p>Vider le cache Varnish de ce site : <strong><?php echo esc_html( $this->current_host() ); ?></strong></p>
+			<h1>Varnish Cache</h1>
+			<p>Purge this site's Varnish cache: <strong><?php echo esc_html( $this->current_host() ); ?></strong></p>
 			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 				<input type="hidden" name="action" value="vnp_purge_current" />
 				<?php wp_nonce_field( 'vnp_purge_current' ); ?>
-				<?php submit_button( 'Vider le cache de ce site', 'primary large' ); ?>
+				<?php submit_button( "Purge this site's cache", 'primary large' ); ?>
 			</form>
 		</div>
 		<?php
@@ -408,7 +407,7 @@ class Varnish_Network_Purge {
 
 	public function handle_purge_current() {
 		if ( ! current_user_can( 'manage_options' ) ) {
-			wp_die( 'Action non autorisée.' );
+			wp_die( 'Action not allowed.' );
 		}
 		check_admin_referer( 'vnp_purge_current' );
 
@@ -418,7 +417,7 @@ class Varnish_Network_Purge {
 	}
 
 	/* --------------------------------------------------------------------- */
-	/* Barre d'administration                                                */
+	/* Admin bar                                                             */
 	/* --------------------------------------------------------------------- */
 
 	public function add_admin_bar( $wp_admin_bar ) {
@@ -435,16 +434,16 @@ class Varnish_Network_Purge {
 
 		$wp_admin_bar->add_node( array(
 			'id'    => 'vnp',
-			'title' => '<span class="ab-icon dashicons dashicons-update" style="font-family:dashicons;top:2px;"></span>' . esc_html( 'Cache Varnish' ),
+			'title' => '<span class="ab-icon dashicons dashicons-update" style="font-family:dashicons;top:2px;"></span>' . esc_html( 'Varnish Cache' ),
 			'href'  => $root_href,
-			'meta'  => array( 'title' => 'Purge du cache Varnish' ),
+			'meta'  => array( 'title' => 'Varnish cache purge' ),
 		) );
 
 		if ( $can_site ) {
 			$wp_admin_bar->add_node( array(
 				'parent' => 'vnp',
 				'id'     => 'vnp-site',
-				'title'  => 'Purger ce site',
+				'title'  => 'Purge this site',
 				'href'   => wp_nonce_url( admin_url( 'admin-post.php?action=vnp_purge_current' ), 'vnp_purge_current' ),
 			) );
 		}
@@ -453,21 +452,21 @@ class Varnish_Network_Purge {
 			$wp_admin_bar->add_node( array(
 				'parent' => 'vnp',
 				'id'     => 'vnp-all',
-				'title'  => 'Purger tout le réseau',
+				'title'  => 'Purge the whole network',
 				'href'   => wp_nonce_url( admin_url( 'admin-post.php?action=vnp_purge_all' ), 'vnp_purge_all' ),
 			) );
 		}
 	}
 
 	/* --------------------------------------------------------------------- */
-	/* Avis d'admin (après redirection)                                      */
+	/* Admin notices (after redirect)                                        */
 	/* --------------------------------------------------------------------- */
 
 	/**
-	 * Mémorise le résultat d'une purge pour l'utilisateur courant.
+	 * Store a purge result for the current user.
 	 *
-	 * @param array[] $results     Résultats de purge.
-	 * @param string  $scope_label Libellé de la cible.
+	 * @param array[] $results     Purge results.
+	 * @param string  $scope_label Target label.
 	 */
 	private function stash_notice( array $results, $scope_label ) {
 		$ok = count( array_filter( $results, function ( $r ) { return $r['ok']; } ) );
@@ -488,7 +487,7 @@ class Varnish_Network_Purge {
 
 		$class = ( $notice['total'] > 0 && $notice['ok'] === $notice['total'] ) ? 'notice-success' : 'notice-warning';
 		printf(
-			'<div class="notice %s is-dismissible"><p><strong>Cache Varnish vidé — %s.</strong> %d / %d requêtes PURGE réussies.</p></div>',
+			'<div class="notice %s is-dismissible"><p><strong>Varnish cache purged — %s.</strong> %d / %d PURGE requests succeeded.</p></div>',
 			esc_attr( $class ),
 			esc_html( $notice['scope'] ),
 			(int) $notice['ok'],
@@ -497,8 +496,8 @@ class Varnish_Network_Purge {
 	}
 
 	/**
-	 * Redirige vers la page précédente (formulaire d'admin ou lien de la
-	 * barre d'admin), avec repli sûr.
+	 * Redirect back to the previous page (admin form or admin-bar link), with
+	 * a safe fallback.
 	 */
 	private function redirect_back() {
 		$back = wp_get_referer();
@@ -510,7 +509,7 @@ class Varnish_Network_Purge {
 	}
 
 	/* --------------------------------------------------------------------- */
-	/* Utilitaires                                                           */
+	/* Helpers                                                               */
 	/* --------------------------------------------------------------------- */
 
 	private function format_results_text( array $results ) {
@@ -518,7 +517,7 @@ class Varnish_Network_Purge {
 		$total = count( $results );
 
 		$lines   = array();
-		$lines[] = "Purge Varnish : {$ok}/{$total} requetes OK";
+		$lines[] = "Varnish purge: {$ok}/{$total} requests OK";
 		$lines[] = str_repeat( '-', 40 );
 		foreach ( $results as $r ) {
 			$status  = $r['ok'] ? 'OK ' : 'ERR';
