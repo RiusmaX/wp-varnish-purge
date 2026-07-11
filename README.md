@@ -6,6 +6,7 @@ Built for a multisite network with **domain mapping** sitting behind Varnish (e.
 
 ## Features
 
+- **Automatic targeted purge** — when a post, page or term is saved (created, updated, trashed, deleted), the plugin automatically purges its URL, the old URL if the slug changed, the home page, and the relevant archives. Menu changes, Customizer saves and theme switches trigger a purge of the whole site.
 - **Network admin** (`Network → Settings → Varnish Cache`)
   - Global purge of every network domain in one pass.
   - Per-site purge (a table listing each domain).
@@ -20,14 +21,15 @@ Built for a multisite network with **domain mapping** sitting behind Varnish (e.
 
 ## How it works
 
-For each target, the plugin sends two `PURGE` HTTP requests in parallel (`curl_multi`):
+Many managed Varnish setups (Infomaniak among them) only honour **exact-URL** purges: `PURGE /*` or regex `BAN`s answer `200 Purged` but evict **nothing** (verified empirically — the response is the same whether an object matched or not). So the plugin never relies on wildcards; it enumerates real URLs and sends **one `PURGE` request per URL**, in parallel batches (`curl_multi`, 50 per batch):
 
-```
-PURGE https://example.com/
-PURGE https://example.com/*
-```
+- **On content change** (save/trash/delete of a post, page or term): the affected URLs only — permalink, old permalink if the slug changed, home page, post type archive, term archives.
+- **On a manual site purge**: every known URL of the site — home page, all published content of public post types, post type archives, term archives (capped at 5000 URLs per site).
+- **On a network purge**: the same, for every site of the network.
 
-`/*` covers the whole site (including subdirectory sub-sites that share the domain).
+Two filters allow adjusting the URL lists: `vnp_post_urls( $urls, $post )` and `vnp_site_urls( $urls )`.
+
+Known limit: paginated archive pages (`/page/2/`…) and date archives are not enumerated; they expire with their natural TTL.
 
 ## Security
 
@@ -44,8 +46,8 @@ PURGE https://example.com/*
 
 ## Requirements
 
-- WordPress multisite (5.2+), PHP 7.2+ with the cURL extension.
-- A Varnish front end that accepts the `PURGE` method from the origin server.
+- WordPress multisite (5.6+), PHP 7.2+ with the cURL extension.
+- A Varnish front end that accepts the `PURGE` method from the origin server (exact-URL purge is enough; no wildcard/ban support required).
 
 ## Translations
 
