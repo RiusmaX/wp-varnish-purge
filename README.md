@@ -36,6 +36,12 @@ Purges are sent in parallel batches (`curl_multi`, 50 per batch):
 
 Note: `X-Purge-Method: exact` exists in the reference VCL but is buggy there (it matches `obj.http.X-Req-Host`, a header the VCL never sets), so the plugin uses the header-less exact purge instead.
 
+## Reference VCL
+
+[`vcl/default.vcl`](vcl/default.vcl) is a complete, generic Varnish 6.0 configuration implementing everything this plugin expects — exact and regex purges, lurker-friendly bans via `x-url`/`x-host` object headers — plus sane WordPress / WooCommerce / PrestaShop caching rules: session and auth cookies bypass, `wp-admin` / `wp-json` / cart / checkout / back-office exclusions, tracking-parameter stripping (`utm_*`, `fbclid`, `gclid`…), static-asset caching with cookie neutralization, 4h grace, and an HTTPS redirect guarded against missing `X-Forwarded-Proto`. The `X-Purge-Method: exact` bug mentioned above is fixed in this version.
+
+Before deploying: fill the `purgers` ACL with the outbound IPs of your web servers, and adjust the backend address. The file is validated with `varnishd -C` and a `varnishtest` functional suite covering caching, both purge methods, session bypass and static handling.
+
 ## Security
 
 - Back-office purges: WordPress capabilities + nonce.
