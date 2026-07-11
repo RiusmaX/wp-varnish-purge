@@ -83,6 +83,7 @@ class Varnish_Network_Purge {
 		add_action( 'admin_post_vnp_purge_all', array( $this, 'handle_purge_all' ) );
 		add_action( 'admin_post_vnp_purge_site', array( $this, 'handle_purge_site' ) );
 		add_action( 'admin_post_vnp_purge_current', array( $this, 'handle_purge_current' ) );
+		add_action( 'admin_post_vnp_purge_page', array( $this, 'handle_purge_page' ) );
 		add_action( 'admin_post_vnp_regen_token', array( $this, 'handle_regen_token' ) );
 
 		// Notices shown after a purge triggered from the admin.
@@ -714,6 +715,31 @@ class Varnish_Network_Purge {
 		$this->redirect_back();
 	}
 
+	/**
+	 * Purge a single page from the admin-bar link shown on the front end.
+	 * The URL is rebuilt from its validated parts (network host + path)
+	 * so only pages of the network can be purged.
+	 */
+	public function handle_purge_page() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Action not allowed.', 'varnish-network-purge' ) );
+		}
+		check_admin_referer( 'vnp_purge_page' );
+
+		$raw  = isset( $_GET['url'] ) ? esc_url_raw( wp_unslash( $_GET['url'] ) ) : '';
+		$host = $raw ? wp_parse_url( $raw, PHP_URL_HOST ) : '';
+		if ( '' === $raw || ! in_array( $host, $this->get_network_hosts(), true ) ) {
+			wp_die( esc_html__( 'Invalid URL.', 'varnish-network-purge' ) );
+		}
+
+		$path = wp_parse_url( $raw, PHP_URL_PATH );
+		$url  = 'https://' . $host . ( $path ? $path : '/' );
+
+		$results = $this->purge_urls( array( $url ) );
+		$this->stash_notice( $results, $url );
+		$this->redirect_back();
+	}
+
 	/* --------------------------------------------------------------------- */
 	/* Admin bar                                                             */
 	/* --------------------------------------------------------------------- */
@@ -736,6 +762,18 @@ class Varnish_Network_Purge {
 			'href'  => $root_href,
 			'meta'  => array( 'title' => esc_attr__( 'Varnish cache purge', 'varnish-network-purge' ) ),
 		) );
+
+		// Current front-end page (meaningless in wp-admin, which is not cached).
+		if ( $can_site && ! is_admin() ) {
+			$path = isset( $_SERVER['REQUEST_URI'] ) ? wp_parse_url( wp_unslash( $_SERVER['REQUEST_URI'] ), PHP_URL_PATH ) : '';
+			$page_url = 'https://' . $this->current_host() . ( $path ? $path : '/' );
+			$wp_admin_bar->add_node( array(
+				'parent' => 'vnp',
+				'id'     => 'vnp-page',
+				'title'  => esc_html__( 'Purge this page', 'varnish-network-purge' ),
+				'href'   => wp_nonce_url( admin_url( 'admin-post.php?action=vnp_purge_page&url=' . rawurlencode( $page_url ) ), 'vnp_purge_page' ),
+			) );
+		}
 
 		if ( $can_site ) {
 			$wp_admin_bar->add_node( array(

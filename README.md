@@ -14,7 +14,7 @@ Built for a multisite network with **domain mapping** sitting behind Varnish (e.
 - **Site settings** (`Settings → Varnish Cache`)
   - Button to purge the **current site** only (available to site administrators, `manage_options` capability).
 - **Admin bar** (top bar)
-  - "Varnish Cache" shortcut with *Purge this site* and, for super admins, *Purge the whole network*.
+  - "Varnish Cache" shortcut with *Purge this page* (the front-end page being viewed), *Purge this site* and, for super admins, *Purge the whole network*.
 - **URL trigger** (curl / cron / bookmark)
   - `https://example.com/?varnish_purge=TOKEN` → purge the whole network.
   - `…&host=DOMAIN` → purge a single site.

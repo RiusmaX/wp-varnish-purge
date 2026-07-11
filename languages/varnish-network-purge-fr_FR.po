@@ -3,7 +3,7 @@
 # This file is distributed under the GPL-2.0-or-later license.
 msgid ""
 msgstr ""
-"Project-Id-Version: Varnish Network Purge 1.2.0\n"
+"Project-Id-Version: Varnish Network Purge 1.3.0\n"
 "Report-Msgid-Bugs-To: https://github.com/RiusmaX/wp-varnish-purge/issues\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
@@ -16,6 +16,9 @@ msgstr "Cache Varnish"
 
 msgid "Varnish cache purge"
 msgstr "Purge du cache Varnish"
+
+msgid "Purge this page"
+msgstr "Purger cette page"
 
 msgid "Purge this site"
 msgstr "Purger ce site"
@@ -81,6 +84,9 @@ msgstr "Action non autorisée."
 
 msgid "Unknown domain."
 msgstr "Domaine inconnu."
+
+msgid "Invalid URL."
+msgstr "URL invalide."
 
 msgid "the whole network"
 msgstr "tout le réseau"
