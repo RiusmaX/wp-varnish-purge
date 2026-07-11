@@ -116,10 +116,14 @@ sub vcl_recv {
 
 	} else {
 
-		# Redirect HTTP -> HTTPS, but only when the front proxy actually
-		# tells us the scheme: without this guard, a missing header would
-		# cause an infinite redirect loop.
-		if (req.http.X-Forwarded-Proto && req.http.X-Forwarded-Proto !~ "(?i)https") {
+		# Redirect HTTP -> HTTPS whenever the front proxy does not say
+		# "https" — INCLUDING when X-Forwarded-Proto is absent (some load
+		# balancers only set it on HTTPS requests). Varnish must issue this
+		# redirect itself (synth, never cached): if a plain-HTTP request
+		# reaches the backend instead, the backend's own 301 to https gets
+		# CACHED without Vary and is then served to HTTPS visitors too —
+		# an instant site-wide redirect loop.
+		if (req.http.X-Forwarded-Proto !~ "(?i)https") {
 			set req.http.x-Redir-Url = "https://" + req.http.host + req.url;
 			return (synth(750));
 		}

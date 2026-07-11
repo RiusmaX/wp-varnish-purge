@@ -64,7 +64,7 @@ varnish v1 -vcl+backend {
 
 client c1 {
 	# --- basic caching: miss then hit, forced 1h TTL ---
-	txreq -url "/page/" -hdr "Host: example.com"
+	txreq -url "/page/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.body == "page-v1"
 	expect resp.http.X-Cache == "MISS"
@@ -72,105 +72,105 @@ client c1 {
 	expect resp.http.x-url == <undef>
 	expect resp.http.x-host == <undef>
 
-	txreq -url "/page/" -hdr "Host: example.com"
+	txreq -url "/page/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.body == "page-v1"
 	expect resp.http.X-Cache == "HIT"
 
-	txreq -url "/other/" -hdr "Host: example.com"
+	txreq -url "/other/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.body == "other-v1"
 	expect resp.http.X-Cache == "MISS"
 
 	# --- tracking params are stripped: same cache entry as /page/ ---
-	txreq -url "/page/?utm_source=newsletter&fbclid=XYZ123" -hdr "Host: example.com"
+	txreq -url "/page/?utm_source=newsletter&fbclid=XYZ123" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.body == "page-v1"
 	expect resp.http.X-Cache == "HIT"
 
 	# --- logged-in cookie bypasses the cache ---
-	txreq -url "/page/" -hdr "Host: example.com" -hdr "Cookie: wordpress_logged_in_abc=1"
+	txreq -url "/page/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https" -hdr "Cookie: wordpress_logged_in_abc=1"
 	rxresp
 	expect resp.body == "page-private"
 	expect resp.http.X-Cacheable == "NO:Logged in/Got Sessions"
 
 	# ...and did not poison the anonymous cache entry
-	txreq -url "/page/" -hdr "Host: example.com"
+	txreq -url "/page/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.body == "page-v1"
 	expect resp.http.X-Cache == "HIT"
 
 	# --- exact purge (no header) ---
-	txreq -req "PURGE" -url "/page/" -hdr "Host: example.com"
+	txreq -req "PURGE" -url "/page/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.status == 200
 
-	txreq -url "/page/" -hdr "Host: example.com"
+	txreq -url "/page/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.body == "page-v2"
 	expect resp.http.X-Cache == "MISS"
 
 	# /other/ untouched by the exact purge
-	txreq -url "/other/" -hdr "Host: example.com"
+	txreq -url "/other/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.body == "other-v1"
 	expect resp.http.X-Cache == "HIT"
 
 	# --- regex purge of the whole host ---
-	txreq -req "PURGE" -url "/" -hdr "Host: example.com" -hdr "X-Purge-Method: regex"
+	txreq -req "PURGE" -url "/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https" -hdr "X-Purge-Method: regex"
 	rxresp
 	expect resp.status == 200
 
-	txreq -url "/page/" -hdr "Host: example.com"
+	txreq -url "/page/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.body == "page-v3"
 	expect resp.http.X-Cache == "MISS"
 
-	txreq -url "/other/" -hdr "Host: example.com"
+	txreq -url "/other/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.body == "other-v2"
 	expect resp.http.X-Cache == "MISS"
 
 	# --- REST API is never cached ---
-	txreq -url "/wp-json/wp/v2/pages" -hdr "Host: example.com"
+	txreq -url "/wp-json/wp/v2/pages" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.body == "json-1"
 	expect resp.http.X-Cacheable == "NO:Logged in/Got Sessions"
 
-	txreq -url "/wp-json/wp/v2/pages" -hdr "Host: example.com"
+	txreq -url "/wp-json/wp/v2/pages" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.body == "json-2"
 
 	# --- static file: cookie stripped, Set-Cookie dropped, cached ---
-	txreq -url "/style.css" -hdr "Host: example.com" -hdr "Cookie: wordpress_logged_in_abc=1"
+	txreq -url "/style.css" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https" -hdr "Cookie: wordpress_logged_in_abc=1"
 	rxresp
 	expect resp.body == "css-v1"
 	expect resp.http.Set-Cookie == <undef>
 
-	txreq -url "/style.css" -hdr "Host: example.com"
+	txreq -url "/style.css" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.body == "css-v1"
 	expect resp.http.X-Cache == "HIT"
 
 	# --- backend Set-Cookie prevents caching (builtin fallthrough) ---
-	txreq -url "/session/" -hdr "Host: example.com"
+	txreq -url "/session/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.body == "sess-1"
 	expect resp.http.X-Cacheable == "NO:Got Cookies"
 
-	txreq -url "/session/" -hdr "Host: example.com"
+	txreq -url "/session/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.body == "sess-2"
 	expect resp.http.X-Cache == "MISS"
 
 	# --- Polylang cookie stripped, page cached anyway ---
-	txreq -url "/langue/" -hdr "Host: example.com"
+	txreq -url "/langue/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.body == "lang-1"
 	expect resp.http.Set-Cookie == <undef>
 	expect resp.http.X-Cache == "MISS"
 
-	txreq -url "/langue/" -hdr "Host: example.com"
+	txreq -url "/langue/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
 	rxresp
 	expect resp.body == "lang-1"
 	expect resp.http.X-Cache == "HIT"
@@ -180,4 +180,20 @@ client c1 {
 	rxresp
 	expect resp.status == 301
 	expect resp.http.Location == "https://example.com/page/"
+} -run
+
+client c2 {
+	# Regression: a request with NO X-Forwarded-Proto at all must be
+	# redirected by Varnish itself (synth), never reach the backend, and
+	# never poison the cache for HTTPS visitors.
+	txreq -url "/page/" -hdr "Host: example.com"
+	rxresp
+	expect resp.status == 301
+	expect resp.http.Location == "https://example.com/page/"
+
+	# The HTTPS variant is still served from cache, unpoisoned.
+	txreq -url "/page/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
+	rxresp
+	expect resp.status == 200
+	expect resp.http.X-Cache == "HIT"
 } -run
