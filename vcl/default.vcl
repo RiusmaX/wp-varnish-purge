@@ -279,8 +279,13 @@ sub vcl_backend_response {
 			set beresp.ttl = 1d;
 		}
 
-		# Wordfence sets harmless cookies that would block caching.
-		if (beresp.http.Set-Cookie ~ "wfvt_|wordfence_verifiedHuman") {
+		# Some plugins set harmless cookies that would otherwise block
+		# caching: Wordfence bot verification, and Polylang's language
+		# memory (pll_language) — each language has its own URLs, so that
+		# cookie is redundant for cache purposes. Note: this drops ALL
+		# Set-Cookie headers of the response when one of these matches;
+		# session-critical URLs are already excluded in vcl_recv.
+		if (beresp.http.Set-Cookie ~ "wfvt_|wordfence_verifiedHuman|pll_language") {
 			unset beresp.http.Set-Cookie;
 		}
 

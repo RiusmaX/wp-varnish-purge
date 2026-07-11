@@ -51,6 +51,11 @@ server s1 {
 	rxreq
 	expect req.url == "/session/"
 	txresp -hdr "Content-Type: text/html" -hdr "Set-Cookie: PHPSESSID=def" -body "sess-2"
+
+	# 11. Polylang language cookie is stripped and the page IS cached
+	rxreq
+	expect req.url == "/langue/"
+	txresp -hdr "Content-Type: text/html" -hdr "Set-Cookie: pll_language=fr; path=/" -body "lang-1"
 } -start
 
 varnish v1 -vcl+backend {
@@ -157,6 +162,18 @@ client c1 {
 	rxresp
 	expect resp.body == "sess-2"
 	expect resp.http.X-Cache == "MISS"
+
+	# --- Polylang cookie stripped, page cached anyway ---
+	txreq -url "/langue/" -hdr "Host: example.com"
+	rxresp
+	expect resp.body == "lang-1"
+	expect resp.http.Set-Cookie == <undef>
+	expect resp.http.X-Cache == "MISS"
+
+	txreq -url "/langue/" -hdr "Host: example.com"
+	rxresp
+	expect resp.body == "lang-1"
+	expect resp.http.X-Cache == "HIT"
 
 	# --- HTTPS redirect only when the front proxy says http ---
 	txreq -url "/page/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: http"
