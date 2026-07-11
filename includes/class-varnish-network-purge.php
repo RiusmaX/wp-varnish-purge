@@ -29,23 +29,17 @@ class Varnish_Network_Purge {
 	/** Minimum delay (seconds) between two purges of the same target via URL. */
 	const THROTTLE_SEC = 10;
 
-	/**
-	 * Number of parallel PURGE requests per curl_multi batch.
-	 *
-	 * The Varnish in front (Infomaniak) only purges EXACT URLs — "/*" or
-	 * regex bans answer "200 Purged" but evict nothing — so a full purge
-	 * means one request per URL. Batching keeps the socket count sane.
-	 */
+	/** Number of parallel PURGE requests per curl_multi batch. */
 	const BATCH_SIZE = 50;
-
-	/** Hard cap of enumerated URLs per site (safety net for huge sites). */
-	const MAX_URLS_PER_SITE = 5000;
 
 	/** @var Varnish_Network_Purge|null */
 	private static $instance = null;
 
-	/** @var string[] URLs queued for purge at shutdown (deduplicated). */
+	/** @var string[] Exact URLs queued for purge at shutdown (deduplicated). */
 	private $queue = array();
+
+	/** @var string[] Hosts whose whole cache is queued for purge at shutdown. */
+	private $queue_hosts = array();
 
 	/**
 	 * Single entry point.
@@ -77,7 +71,7 @@ class Varnish_Network_Purge {
 		add_action( 'customize_save_after', array( $this, 'queue_full_site_purge' ) );
 		add_action( 'switch_theme', array( $this, 'queue_full_site_purge' ) );
 
-		// Queued URLs are flushed once, after everything has been saved.
+		// Queued purges are flushed once, after everything has been saved.
 		add_action( 'shutdown', array( $this, 'flush_queue' ) );
 
 		// Admin screens.
@@ -105,7 +99,15 @@ class Varnish_Network_Purge {
 	}
 
 	/* --------------------------------------------------------------------- */
-	/* Core: URL enumeration + sending PURGE requests                        */
+	/* Core: sending PURGE requests                                          */
+	/*                                                                       */
+	/* The VCL in front implements the Proxy-Cache-Purge convention:         */
+	/*   - PURGE without header        -> exact-URL purge (query stripped)   */
+	/*   - PURGE + X-Purge-Method:regex-> ban obj.x-url ~ url && x-host ~ host */
+	/* So one "PURGE / + regex" request wipes a whole domain (pages,         */
+	/* pagination, feeds, static assets), while content saves use precise    */
+	/* exact-URL purges to keep the rest of the cache warm.                  */
+	/* NB: the VCL answers "200 Purged" whether an object matched or not.    */
 	/* --------------------------------------------------------------------- */
 
 	/**
@@ -123,7 +125,8 @@ class Varnish_Network_Purge {
 	}
 
 	/**
-	 * List of unique network domains (for the admin table and host targeting).
+	 * List of unique network domains (subdirectory sub-sites share the
+	 * domain of their host site and are covered by its host-wide purge).
 	 *
 	 * @return string[]
 	 */
@@ -153,7 +156,7 @@ class Varnish_Network_Purge {
 	}
 
 	/**
-	 * Current site's host (for display / labels).
+	 * Current site's host (for display / labels / purges).
 	 *
 	 * @return string
 	 */
@@ -163,149 +166,79 @@ class Varnish_Network_Purge {
 	}
 
 	/**
-	 * Every purgeable URL of the CURRENT site: home page, all published
-	 * content of public post types, term archives, post type archives.
-	 *
-	 * The Varnish in front only supports exact-URL purge (no wildcard, no
-	 * regex ban), so a site-wide purge has to enumerate real URLs.
-	 *
-	 * @return string[]
-	 */
-	private function collect_site_urls() {
-		$urls   = array();
-		$urls[] = home_url( '/' );
-
-		// Published content of every public post type.
-		$post_types = get_post_types( array( 'public' => true ), 'names' );
-		$post_ids   = get_posts( array(
-			'post_type'              => array_values( $post_types ),
-			'post_status'            => 'publish',
-			'numberposts'            => self::MAX_URLS_PER_SITE,
-			'fields'                 => 'ids',
-			'no_found_rows'          => true,
-			'update_post_meta_cache' => false,
-			'update_post_term_cache' => false,
-		) );
-		foreach ( $post_ids as $post_id ) {
-			$link = get_permalink( $post_id );
-			if ( $link ) {
-				$urls[] = $link;
-			}
-		}
-
-		// Post type archives (e.g. /blog/ for a CPT with has_archive).
-		foreach ( $post_types as $post_type ) {
-			$archive = get_post_type_archive_link( $post_type );
-			if ( $archive ) {
-				$urls[] = $archive;
-			}
-		}
-
-		// Term archives of every public taxonomy.
-		$taxonomies = get_taxonomies( array( 'public' => true ), 'names' );
-		if ( ! empty( $taxonomies ) ) {
-			$terms = get_terms( array(
-				'taxonomy'   => array_values( $taxonomies ),
-				'hide_empty' => true,
-			) );
-			if ( ! is_wp_error( $terms ) ) {
-				foreach ( $terms as $term ) {
-					$link = get_term_link( $term );
-					if ( ! is_wp_error( $link ) ) {
-						$urls[] = $link;
-					}
-				}
-			}
-		}
-
-		/**
-		 * Filter the list of URLs purged for the current site.
-		 *
-		 * @param string[] $urls Absolute URLs.
-		 */
-		$urls = apply_filters( 'vnp_site_urls', $urls );
-
-		return array_slice( array_values( array_unique( $urls ) ), 0, self::MAX_URLS_PER_SITE );
-	}
-
-	/**
-	 * Every purgeable URL of the sites whose mapped domain is $host
-	 * (subdirectory sub-sites share the domain of their host site).
-	 *
-	 * @param string $host Domain, e.g. "port-hoedic.com".
-	 * @return string[]
-	 */
-	private function collect_host_urls( $host ) {
-		if ( ! function_exists( 'get_sites' ) || ! is_multisite() ) {
-			return $this->collect_site_urls();
-		}
-
-		$urls  = array();
-		$sites = get_sites( array(
-			'domain'   => $host,
-			'number'   => 0,
-			'deleted'  => 0,
-			'archived' => 0,
-			'spam'     => 0,
-		) );
-
-		foreach ( $sites as $site ) {
-			switch_to_blog( (int) $site->blog_id );
-			$urls = array_merge( $urls, $this->collect_site_urls() );
-			restore_current_blog();
-		}
-
-		return array_values( array_unique( $urls ) );
-	}
-
-	/**
-	 * Purge every site of the network, URL by URL.
+	 * Purge every domain of the network (one wildcard request per domain).
 	 *
 	 * @return array[]
 	 */
 	private function purge_all() {
-		if ( ! function_exists( 'get_sites' ) || ! is_multisite() ) {
-			return $this->purge_urls( $this->collect_site_urls() );
-		}
-
-		$urls  = array();
-		$sites = get_sites( array(
-			'number'   => 0,
-			'deleted'  => 0,
-			'archived' => 0,
-			'spam'     => 0,
-		) );
-
-		foreach ( $sites as $site ) {
-			switch_to_blog( (int) $site->blog_id );
-			$urls = array_merge( $urls, $this->collect_site_urls() );
-			restore_current_blog();
-		}
-
-		return $this->purge_urls( array_values( array_unique( $urls ) ) );
+		return $this->purge_hosts( $this->get_network_hosts() );
 	}
 
 	/**
-	 * Send one PURGE request per URL, in parallel batches via curl_multi.
+	 * Wipe the whole cache of each given domain: one PURGE request on "/"
+	 * with "X-Purge-Method: regex", which the VCL turns into a ban matching
+	 * every object of the host (pages, pagination, feeds, static assets).
 	 *
-	 * @param string[] $urls Exact absolute URLs to purge.
+	 * @param string[] $hosts Domains, e.g. [ "example.com" ].
+	 * @return array[] List of results { url, code, ok, err }.
+	 */
+	private function purge_hosts( array $hosts ) {
+		$requests = array();
+		foreach ( $hosts as $host ) {
+			$host = trim( $host );
+			if ( '' !== $host ) {
+				$requests[] = array(
+					'url'   => 'https://' . $host . '/',
+					'regex' => true,
+				);
+			}
+		}
+		return $this->send_purge_requests( $requests );
+	}
+
+	/**
+	 * Purge a list of exact URLs (one PURGE request per URL).
+	 *
+	 * @param string[] $urls Exact absolute URLs.
 	 * @return array[] List of results { url, code, ok, err }.
 	 */
 	private function purge_urls( array $urls ) {
+		$requests = array();
+		foreach ( $urls as $url ) {
+			$requests[] = array(
+				'url'   => $url,
+				'regex' => false,
+			);
+		}
+		return $this->send_purge_requests( $requests );
+	}
+
+	/**
+	 * Send PURGE requests in parallel batches via curl_multi.
+	 *
+	 * @param array[] $requests List of { url: string, regex: bool }.
+	 * @return array[] List of results { url, code, ok, err }.
+	 */
+	private function send_purge_requests( array $requests ) {
 		$results = array();
 
-		if ( empty( $urls ) || ! function_exists( 'curl_multi_init' ) ) {
+		if ( empty( $requests ) || ! function_exists( 'curl_multi_init' ) ) {
 			return $results;
 		}
 
-		foreach ( array_chunk( $urls, self::BATCH_SIZE ) as $batch ) {
+		foreach ( array_chunk( $requests, self::BATCH_SIZE ) as $batch ) {
 			$mh      = curl_multi_init();
 			$handles = array();
 
-			foreach ( $batch as $url ) {
-				$ch = curl_init( $url );
+			foreach ( $batch as $request ) {
+				$ch      = curl_init( $request['url'] );
+				$headers = array();
+				if ( ! empty( $request['regex'] ) ) {
+					$headers[] = 'X-Purge-Method: regex';
+				}
 				curl_setopt_array( $ch, array(
 					CURLOPT_CUSTOMREQUEST  => 'PURGE',
+					CURLOPT_HTTPHEADER     => $headers,
 					CURLOPT_RETURNTRANSFER => true,
 					CURLOPT_TIMEOUT        => 10,
 					CURLOPT_CONNECTTIMEOUT => 5,
@@ -315,7 +248,7 @@ class Varnish_Network_Purge {
 					CURLOPT_USERAGENT      => 'Varnish-Network-Purge/' . VNP_VERSION,
 				) );
 				curl_multi_add_handle( $mh, $ch );
-				$handles[] = array( 'ch' => $ch, 'url' => $url );
+				$handles[] = array( 'ch' => $ch, 'url' => $request['url'] );
 			}
 
 			$running = null;
@@ -414,7 +347,7 @@ class Varnish_Network_Purge {
 	 *
 	 * @param int    $term_id  Term ID.
 	 * @param int    $tt_id    Term taxonomy ID (unused).
-	 * @param string $taxonomy Taxonomy (absent on pre_delete_term's signature order).
+	 * @param string $taxonomy Taxonomy (unused; pre_delete_term passes it as 2nd arg).
 	 */
 	public function queue_term_purge( $term_id, $tt_id = 0, $taxonomy = '' ) {
 		$term = get_term( $term_id );
@@ -435,7 +368,10 @@ class Varnish_Network_Purge {
 	 * switch — changes that affect every page).
 	 */
 	public function queue_full_site_purge() {
-		$this->queue_urls( $this->collect_site_urls() );
+		$host = $this->current_host();
+		if ( $host ) {
+			$this->queue_hosts[ $host ] = true;
+		}
 	}
 
 	/**
@@ -485,7 +421,7 @@ class Varnish_Network_Purge {
 	}
 
 	/**
-	 * Add URLs to the shutdown queue (deduplicated).
+	 * Add exact URLs to the shutdown queue (deduplicated).
 	 *
 	 * @param string[] $urls Absolute URLs.
 	 */
@@ -498,15 +434,35 @@ class Varnish_Network_Purge {
 	}
 
 	/**
-	 * Send the queued PURGE requests once, at the end of the request.
+	 * Send the queued purges once, at the end of the request. Exact URLs
+	 * already covered by a queued host-wide purge are skipped.
 	 */
 	public function flush_queue() {
-		if ( empty( $this->queue ) ) {
+		if ( empty( $this->queue ) && empty( $this->queue_hosts ) ) {
 			return;
 		}
-		$urls        = array_keys( $this->queue );
-		$this->queue = array();
-		$this->purge_urls( $urls );
+
+		$requests = array();
+		foreach ( array_keys( $this->queue_hosts ) as $host ) {
+			$requests[] = array(
+				'url'   => 'https://' . $host . '/',
+				'regex' => true,
+			);
+		}
+		foreach ( array_keys( $this->queue ) as $url ) {
+			$host = wp_parse_url( $url, PHP_URL_HOST );
+			if ( $host && isset( $this->queue_hosts[ $host ] ) ) {
+				continue;
+			}
+			$requests[] = array(
+				'url'   => $url,
+				'regex' => false,
+			);
+		}
+
+		$this->queue       = array();
+		$this->queue_hosts = array();
+		$this->send_purge_requests( $requests );
 	}
 
 	/* --------------------------------------------------------------------- */
@@ -557,7 +513,7 @@ class Varnish_Network_Purge {
 		set_site_transient( $throttle_key, time(), self::THROTTLE_SEC );
 
 		$results = ( '' !== $target )
-			? $this->purge_urls( $this->collect_host_urls( $target ) )
+			? $this->purge_hosts( array( $target ) )
 			: $this->purge_all();
 
 		status_header( 200 );
@@ -595,7 +551,7 @@ class Varnish_Network_Purge {
 			printf(
 				wp_kses(
 					/* translators: %d: number of network domains */
-					__( 'Purge the Varnish cache of all <strong>%d network domains</strong> at once (every known URL of every site, one PURGE request per URL).', 'varnish-network-purge' ),
+					__( 'Purge the Varnish cache of all <strong>%d network domains</strong> at once.', 'varnish-network-purge' ),
 					array( 'strong' => array() )
 				),
 				count( $hosts )
@@ -695,7 +651,7 @@ class Varnish_Network_Purge {
 			wp_die( esc_html__( 'Unknown domain.', 'varnish-network-purge' ) );
 		}
 
-		$results = $this->purge_urls( $this->collect_host_urls( $host ) );
+		$results = $this->purge_hosts( array( $host ) );
 		$this->stash_notice( $results, $host );
 		$this->redirect_back();
 	}
@@ -753,7 +709,7 @@ class Varnish_Network_Purge {
 		}
 		check_admin_referer( 'vnp_purge_current' );
 
-		$results = $this->purge_urls( $this->collect_site_urls() );
+		$results = $this->purge_hosts( array( $this->current_host() ) );
 		$this->stash_notice( $results, $this->current_host() );
 		$this->redirect_back();
 	}
@@ -829,8 +785,8 @@ class Varnish_Network_Purge {
 
 		$class   = ( $notice['total'] > 0 && $notice['ok'] === $notice['total'] ) ? 'notice-success' : 'notice-warning';
 		$message = sprintf(
-			/* translators: 1: target label, 2: purged URLs, 3: total URLs */
-			__( 'Varnish cache purged — %1$s. %2$d / %3$d URLs purged.', 'varnish-network-purge' ),
+			/* translators: 1: target label, 2: successful requests, 3: total requests */
+			__( 'Varnish cache purged — %1$s. %2$d / %3$d PURGE requests succeeded.', 'varnish-network-purge' ),
 			$notice['scope'],
 			(int) $notice['ok'],
 			(int) $notice['total']
@@ -864,7 +820,7 @@ class Varnish_Network_Purge {
 		$total = count( $results );
 
 		$lines   = array();
-		$lines[] = "Varnish purge: {$ok}/{$total} URLs OK";
+		$lines[] = "Varnish purge: {$ok}/{$total} requests OK";
 		$lines[] = str_repeat( '-', 40 );
 		foreach ( $results as $r ) {
 			$status  = $r['ok'] ? 'OK ' : 'ERR';

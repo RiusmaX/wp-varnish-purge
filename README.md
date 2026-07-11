@@ -21,15 +21,20 @@ Built for a multisite network with **domain mapping** sitting behind Varnish (e.
 
 ## How it works
 
-Many managed Varnish setups (Infomaniak among them) only honour **exact-URL** purges: `PURGE /*` or regex `BAN`s answer `200 Purged` but evict **nothing** (verified empirically — the response is the same whether an object matched or not). So the plugin never relies on wildcards; it enumerates real URLs and sends **one `PURGE` request per URL**, in parallel batches (`curl_multi`, 50 per batch):
+The plugin targets a VCL implementing the [Proxy Cache Purge](https://wordpress.org/plugins/varnish-http-purge/) convention:
 
-- **On content change** (save/trash/delete of a post, page or term): the affected URLs only — permalink, old permalink if the slug changed, home page, post type archive, term archives.
-- **On a manual site purge**: every known URL of the site — home page, all published content of public post types, post type archives, term archives (capped at 5000 URLs per site).
-- **On a network purge**: the same, for every site of the network.
+- `PURGE <url>` without header → **exact-URL** purge (Varnish's native `purge`, query string stripped).
+- `PURGE <url>` with `X-Purge-Method: regex` → a **ban** on `obj.http.x-url ~ <url> && obj.http.x-host ~ <host>` (requires the VCL to stamp `x-url` / `x-host` on objects in `vcl_backend_response`).
 
-Two filters allow adjusting the URL lists: `vnp_post_urls( $urls, $post )` and `vnp_site_urls( $urls )`.
+Beware: a bare `PURGE https://example.com/*` does **not** work on such a VCL — without the header it purges the literal object `/*` and still answers `200 Purged` (the response is the same whether an object matched or not; verified empirically). That trap is what this plugin's v1.1 rework fixed, and v1.2 now uses the proper header.
 
-Known limit: paginated archive pages (`/page/2/`…) and date archives are not enumerated; they expire with their natural TTL.
+Purges are sent in parallel batches (`curl_multi`, 50 per batch):
+
+- **On content change** (save/trash/delete of a post, page or term): precise exact-URL purges — permalink, old permalink if the slug changed, home page, post type archive, term archives — so the rest of the cache stays warm. Queued and flushed once at `shutdown`. The `vnp_post_urls( $urls, $post )` filter adjusts the list.
+- **On a manual site purge** (admin button, admin bar, `&host=` URL trigger) and on site-wide changes (menu, Customizer, theme switch): a single `PURGE https://domain/` with `X-Purge-Method: regex`, which wipes everything for the domain — pages, pagination, feeds, static assets, and subdirectory sub-sites sharing it.
+- **On a network purge**: one such wildcard request per network domain.
+
+Note: `X-Purge-Method: exact` exists in the reference VCL but is buggy there (it matches `obj.http.X-Req-Host`, a header the VCL never sets), so the plugin uses the header-less exact purge instead.
 
 ## Security
 
@@ -47,7 +52,7 @@ Known limit: paginated archive pages (`/page/2/`…) and date archives are not e
 ## Requirements
 
 - WordPress multisite (5.6+), PHP 7.2+ with the cURL extension.
-- A Varnish front end that accepts the `PURGE` method from the origin server (exact-URL purge is enough; no wildcard/ban support required).
+- A Varnish front end that accepts the `PURGE` method from the origin server and implements the `X-Purge-Method: regex` ban convention (see *How it works*).
 
 ## Translations
 
