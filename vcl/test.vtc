@@ -56,6 +56,15 @@ server s1 {
 	rxreq
 	expect req.url == "/langue/"
 	txresp -hdr "Content-Type: text/html" -hdr "Set-Cookie: pll_language=fr; path=/" -body "lang-1"
+
+	# 12. self-redirect from the backend is delivered but NEVER cached:
+	# two client requests must produce two backend fetches
+	rxreq
+	expect req.url == "/loop/"
+	txresp -status 301 -hdr "Location: https://example.com/loop/"
+	rxreq
+	expect req.url == "/loop/"
+	txresp -status 301 -hdr "Location: https://example.com/loop/"
 } -start
 
 varnish v1 -vcl+backend {
@@ -180,6 +189,17 @@ client c1 {
 	rxresp
 	expect resp.status == 301
 	expect resp.http.Location == "https://example.com/page/"
+
+	# --- self-redirect: delivered once, never cached (anti redirect-loop) ---
+	txreq -url "/loop/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
+	rxresp
+	expect resp.status == 301
+	expect resp.http.X-Cacheable == "NO:SelfRedirect"
+
+	txreq -url "/loop/" -hdr "Host: example.com" -hdr "X-Forwarded-Proto: https"
+	rxresp
+	expect resp.status == 301
+	expect resp.http.X-Cache == "MISS"
 } -run
 
 client c2 {

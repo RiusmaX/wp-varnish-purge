@@ -310,6 +310,19 @@ sub vcl_backend_response {
 			}
 		}
 
+		# Never cache a redirect that points back to the requested URL.
+		# If one ever slips through (proxy header misconfiguration, plugin
+		# or canonical-redirect bug), caching it would serve an infinite
+		# redirect loop to every visitor until the next purge. Deliver it
+		# once, but never store it. Kept LAST so nothing overrides it.
+		if ((beresp.status == 301 || beresp.status == 302 || beresp.status == 307) &&
+			(beresp.http.Location == "https://" + bereq.http.host + bereq.url ||
+			 beresp.http.Location == "http://" + bereq.http.host + bereq.url)) {
+			set beresp.http.X-Cacheable = "NO:SelfRedirect";
+			set beresp.ttl = 10s;
+			set beresp.uncacheable = true;
+		}
+
 		# No explicit return: the builtin vcl_backend_response still runs
 		# and correctly refuses to cache Set-Cookie / no-store / no-cache /
 		# private responses (that is what keeps logged-in and PrestaShop
