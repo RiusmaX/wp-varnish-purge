@@ -7,6 +7,7 @@ Built for a multisite network with **domain mapping** sitting behind Varnish (e.
 ## Features
 
 - **Automatic targeted purge** — when a post, page or term is saved (created, updated, trashed, deleted), the plugin automatically purges its URL, the old URL if the slug changed, the home page, and the relevant archives. Menu changes, Customizer saves and theme switches trigger a purge of the whole site.
+- **WP Fastest Cache synchronization** — stacked page caches drift apart: WPFC can keep serving HTML that references deleted minified CSS/JS bundles, which Varnish then re-caches (broken styling for visitors while everything looks fine in the editor). When WPFC is active, every purge of this plugin clears the matching WPFC cache first (pages + minified assets, per site), and conversely clearing WPFC (admin bar "Delete Cache", its own hooks) automatically triggers the matching Varnish purge. No configuration needed; inactive if WPFC is absent.
 - **Network admin** (`Network → Settings → Varnish Cache`)
   - Global purge of every network domain in one pass.
   - Per-site purge (a table listing each domain).

@@ -41,6 +41,9 @@ class Varnish_Network_Purge {
 	/** @var string[] Hosts whose whole cache is queued for purge at shutdown. */
 	private $queue_hosts = array();
 
+	/** @var bool True while we are clearing local caches ourselves (loop guard). */
+	private $syncing_local = false;
+
 	/**
 	 * Single entry point.
 	 *
@@ -70,6 +73,14 @@ class Varnish_Network_Purge {
 		add_action( 'wp_update_nav_menu', array( $this, 'queue_full_site_purge' ) );
 		add_action( 'customize_save_after', array( $this, 'queue_full_site_purge' ) );
 		add_action( 'switch_theme', array( $this, 'queue_full_site_purge' ) );
+
+		// Keep WP Fastest Cache and Varnish coherent: when WPFC is cleared
+		// (admin bar button, its own hooks…), purge Varnish too. Otherwise
+		// Varnish keeps serving HTML that references deleted minified
+		// CSS/JS bundles, and pages break once those expire.
+		add_action( 'wpfc_clear_all_cache', array( $this, 'on_wpfc_clear_all' ) );
+		add_action( 'wpfc_delete_cache', array( $this, 'on_wpfc_clear_all' ) );
+		add_action( 'wpfc_clear_post_cache_by_id', array( $this, 'on_wpfc_clear_post' ), 10, 2 );
 
 		// Queued purges are flushed once, after everything has been saved.
 		add_action( 'shutdown', array( $this, 'flush_queue' ) );
@@ -167,12 +178,100 @@ class Varnish_Network_Purge {
 	}
 
 	/**
-	 * Purge every domain of the network (one wildcard request per domain).
+	 * Purge every domain of the network (one wildcard request per domain),
+	 * clearing local page caches first so Varnish cannot re-cache stale HTML.
 	 *
 	 * @return array[]
 	 */
 	private function purge_all() {
+		if ( function_exists( 'get_sites' ) && is_multisite() ) {
+			$sites = get_sites( array(
+				'number'   => 0,
+				'deleted'  => 0,
+				'archived' => 0,
+				'spam'     => 0,
+			) );
+			foreach ( $sites as $site ) {
+				switch_to_blog( (int) $site->blog_id );
+				$this->clear_local_site_cache();
+				restore_current_blog();
+			}
+		} else {
+			$this->clear_local_site_cache();
+		}
+
 		return $this->purge_hosts( $this->get_network_hosts() );
+	}
+
+	/* --------------------------------------------------------------------- */
+	/* Local page caches (WP Fastest Cache): keep them in sync with Varnish  */
+	/* --------------------------------------------------------------------- */
+
+	/**
+	 * Clear the WP Fastest Cache of the CURRENT site (pages + minified
+	 * CSS/JS bundles). Called before purging Varnish: local caches first,
+	 * then Varnish, so the next request rebuilds coherent HTML + assets.
+	 */
+	private function clear_local_site_cache() {
+		if ( ! function_exists( 'wpfc_clear_all_cache' ) ) {
+			return;
+		}
+		$this->syncing_local = true;
+		wpfc_clear_all_cache( true );
+		$this->syncing_local = false;
+	}
+
+	/**
+	 * Clear the WP Fastest Cache of every site whose mapped domain is $host.
+	 *
+	 * @param string $host Domain, e.g. "example.com".
+	 */
+	private function clear_local_host_cache( $host ) {
+		if ( ! function_exists( 'get_sites' ) || ! is_multisite() ) {
+			$this->clear_local_site_cache();
+			return;
+		}
+
+		$sites = get_sites( array(
+			'domain'   => $host,
+			'number'   => 0,
+			'deleted'  => 0,
+			'archived' => 0,
+			'spam'     => 0,
+		) );
+		foreach ( $sites as $site ) {
+			switch_to_blog( (int) $site->blog_id );
+			$this->clear_local_site_cache();
+			restore_current_blog();
+		}
+	}
+
+	/**
+	 * WPFC was cleared by someone else (admin bar, cron, another plugin):
+	 * purge Varnish for the current site so both layers stay coherent.
+	 */
+	public function on_wpfc_clear_all() {
+		if ( $this->syncing_local ) {
+			return;
+		}
+		$this->queue_host_wipe();
+	}
+
+	/**
+	 * WPFC cleared the cache of one post: purge its URLs in Varnish too.
+	 * WPFC fires this action as do_action(hook, false, $post_id).
+	 *
+	 * @param mixed $unused  First argument passed by WPFC (always false).
+	 * @param int   $post_id Post ID.
+	 */
+	public function on_wpfc_clear_post( $unused = false, $post_id = 0 ) {
+		if ( $this->syncing_local ) {
+			return;
+		}
+		$post = $post_id ? get_post( $post_id ) : null;
+		if ( $post instanceof WP_Post ) {
+			$this->queue_urls( $this->urls_for_post( $post ) );
+		}
 	}
 
 	/**
@@ -318,6 +417,14 @@ class Varnish_Network_Purge {
 				$this->queue_urls( array( $old_link ) );
 			}
 		}
+
+		// Drop the WPFC copy of this post as well: with some settings WPFC
+		// only watches the "post" type, leaving stale page HTML behind.
+		if ( function_exists( 'wpfc_clear_post_cache_by_id' ) ) {
+			$this->syncing_local = true;
+			wpfc_clear_post_cache_by_id( $post->ID );
+			$this->syncing_local = false;
+		}
 	}
 
 	/**
@@ -365,10 +472,19 @@ class Varnish_Network_Purge {
 	}
 
 	/**
-	 * Queue a purge of the whole current site (menus, customizer, theme
-	 * switch — changes that affect every page).
+	 * Site-wide change (menus, customizer, theme switch — affects every
+	 * page): clear the local page cache and queue a Varnish wipe of the
+	 * current site.
 	 */
 	public function queue_full_site_purge() {
+		$this->clear_local_site_cache();
+		$this->queue_host_wipe();
+	}
+
+	/**
+	 * Queue a Varnish wipe of the current site's host (no local clearing).
+	 */
+	private function queue_host_wipe() {
 		$host = $this->current_host();
 		if ( $host ) {
 			$this->queue_hosts[ $host ] = true;
@@ -513,9 +629,12 @@ class Varnish_Network_Purge {
 		}
 		set_site_transient( $throttle_key, time(), self::THROTTLE_SEC );
 
-		$results = ( '' !== $target )
-			? $this->purge_hosts( array( $target ) )
-			: $this->purge_all();
+		if ( '' !== $target ) {
+			$this->clear_local_host_cache( $target );
+			$results = $this->purge_hosts( array( $target ) );
+		} else {
+			$results = $this->purge_all();
+		}
 
 		status_header( 200 );
 		echo $this->format_results_text( $results );
@@ -652,6 +771,7 @@ class Varnish_Network_Purge {
 			wp_die( esc_html__( 'Unknown domain.', 'varnish-network-purge' ) );
 		}
 
+		$this->clear_local_host_cache( $host );
 		$results = $this->purge_hosts( array( $host ) );
 		$this->stash_notice( $results, $host );
 		$this->redirect_back();
@@ -710,6 +830,7 @@ class Varnish_Network_Purge {
 		}
 		check_admin_referer( 'vnp_purge_current' );
 
+		$this->clear_local_site_cache();
 		$results = $this->purge_hosts( array( $this->current_host() ) );
 		$this->stash_notice( $results, $this->current_host() );
 		$this->redirect_back();
@@ -734,6 +855,14 @@ class Varnish_Network_Purge {
 
 		$path = wp_parse_url( $raw, PHP_URL_PATH );
 		$url  = 'https://' . $host . ( $path ? $path : '/' );
+
+		// Drop the WPFC copy of the page too, when it maps to a post.
+		$post_id = url_to_postid( $url );
+		if ( $post_id && function_exists( 'wpfc_clear_post_cache_by_id' ) ) {
+			$this->syncing_local = true;
+			wpfc_clear_post_cache_by_id( $post_id );
+			$this->syncing_local = false;
+		}
 
 		$results = $this->purge_urls( array( $url ) );
 		$this->stash_notice( $results, $url );
