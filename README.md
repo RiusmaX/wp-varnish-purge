@@ -1,19 +1,20 @@
 # Varnish Network Purge
 
-WordPress **multisite** plugin to purge the **Varnish** cache of every site in the network — or just one — without touching the command line.
+WordPress plugin to purge the **Varnish** cache of a site — or of every site in a **multisite** network — without touching the command line.
 
-Built for a multisite network with **domain mapping** sitting behind Varnish (e.g. Infomaniak), where each site has its own domain. The list of domains is fetched **dynamically** via `get_sites()`, so any new network site is handled automatically.
+Built for a multisite network with **domain mapping** sitting behind Varnish (e.g. Infomaniak), where each site has its own domain; the list of domains is fetched **dynamically** via `get_sites()`, so any new network site is handled automatically. It also works on a **regular single-site** WordPress: the URL trigger and token management then live in *Settings → Varnish Cache*, and global actions require `manage_options` instead of `manage_network`.
 
 ## Features
 
 - **Automatic targeted purge** — when a post, page or term is saved (created, updated, trashed, deleted), the plugin automatically purges its URL, the old URL if the slug changed, the home page, and the relevant archives. Menu changes, Customizer saves and theme switches trigger a purge of the whole site.
 - **WP Fastest Cache synchronization** — stacked page caches drift apart: WPFC can keep serving HTML that references deleted minified CSS/JS bundles, which Varnish then re-caches (broken styling for visitors while everything looks fine in the editor). When WPFC is active, every purge of this plugin clears the matching WPFC cache first (pages + minified assets, per site), and conversely clearing WPFC (admin bar "Delete Cache", its own hooks) automatically triggers the matching Varnish purge. No configuration needed; inactive if WPFC is absent.
-- **Network admin** (`Network → Settings → Varnish Cache`)
+- **Network admin** (`Network → Settings → Varnish Cache`, multisite)
   - Global purge of every network domain in one pass.
   - Per-site purge (a table listing each domain).
   - Secret URL (token), regenerable.
 - **Site settings** (`Settings → Varnish Cache`)
   - Button to purge the **current site** only (available to site administrators, `manage_options` capability).
+  - On a **single-site** install, this page also hosts the URL trigger and token management.
 - **Admin bar** (top bar)
   - "Varnish Cache" shortcut with *Purge this page* (the front-end page being viewed), *Purge this site* and, for super admins, *Purge the whole network*.
 - **URL trigger** (curl / cron / bookmark)
@@ -53,12 +54,12 @@ Before deploying: fill the `purgers` ACL with the outbound IPs of your web serve
 ## Installation
 
 1. Copy the `varnish-network-purge/` folder into `wp-content/plugins/`.
-2. In **Network Admin → Plugins**, click **Network Activate**.
-3. Open **Network → Settings → Varnish Cache** to grab the URL/token.
+2. Multisite: in **Network Admin → Plugins**, click **Network Activate**. Single site: activate it in **Plugins**.
+3. Open **Network → Settings → Varnish Cache** (multisite) or **Settings → Varnish Cache** (single site) to grab the URL/token.
 
 ## Requirements
 
-- WordPress multisite (5.6+), PHP 7.2+ with the cURL extension.
+- WordPress 5.6+ (single site or multisite), PHP 7.2+ with the cURL extension.
 - A Varnish front end that accepts the `PURGE` method from the origin server and implements the `X-Purge-Method: regex` ban convention (see *How it works*).
 
 ## Translations

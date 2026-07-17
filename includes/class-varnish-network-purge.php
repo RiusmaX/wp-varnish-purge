@@ -178,6 +178,17 @@ class Varnish_Network_Purge {
 	}
 
 	/**
+	 * Capability required for global actions (full purge, token management):
+	 * super admin on multisite, administrator on a single site (where
+	 * "manage_network" is granted to nobody).
+	 *
+	 * @return string
+	 */
+	private function manage_cap() {
+		return is_multisite() ? 'manage_network' : 'manage_options';
+	}
+
+	/**
 	 * Purge every domain of the network (one wildcard request per domain),
 	 * clearing local page caches first so Varnish cannot re-cache stale HTML.
 	 *
@@ -657,10 +668,7 @@ class Varnish_Network_Purge {
 	}
 
 	public function render_network_page() {
-		$token        = $this->get_token();
-		$purge_url    = add_query_arg( self::QUERY_VAR, $token, network_home_url( '/' ) );
-		$hosts        = $this->get_network_hosts();
-		$example_host = ! empty( $hosts ) ? reset( $hosts ) : 'example.com';
+		$hosts = $this->get_network_hosts();
 		?>
 		<div class="wrap">
 			<h1><?php esc_html_e( 'Varnish Cache — Network', 'varnish-network-purge' ); ?></h1>
@@ -715,17 +723,38 @@ class Varnish_Network_Purge {
 
 			<hr />
 
-			<h2><?php esc_html_e( 'URL trigger', 'varnish-network-purge' ); ?></h2>
-			<p>
-				<?php esc_html_e( 'URL to call (curl, bookmark, scheduled task).', 'varnish-network-purge' ); ?>
-				<strong><?php esc_html_e( 'Keep it secret.', 'varnish-network-purge' ); ?></strong>
-			</p>
-			<p>
-				<input type="text" readonly onclick="this.select();" style="width:100%;max-width:820px;"
-					value="<?php echo esc_attr( $purge_url ); ?>" />
-			</p>
-			<p><code>curl -s "<?php echo esc_html( $purge_url ); ?>"</code></p>
+			<?php $this->render_token_section( true ); ?>
+		</div>
+		<?php
+	}
 
+	/**
+	 * URL trigger + token management section, shared by the network admin
+	 * page (multisite) and the site settings page (single site).
+	 *
+	 * @param bool $with_host_example Show the "&host=DOMAIN" example
+	 *                                (only meaningful on multisite).
+	 */
+	private function render_token_section( $with_host_example ) {
+		$token     = $this->get_token();
+		$purge_url = add_query_arg( self::QUERY_VAR, $token, network_home_url( '/' ) );
+		?>
+		<h2><?php esc_html_e( 'URL trigger', 'varnish-network-purge' ); ?></h2>
+		<p>
+			<?php esc_html_e( 'URL to call (curl, bookmark, scheduled task).', 'varnish-network-purge' ); ?>
+			<strong><?php esc_html_e( 'Keep it secret.', 'varnish-network-purge' ); ?></strong>
+		</p>
+		<p>
+			<input type="text" readonly onclick="this.select();" style="width:100%;max-width:820px;"
+				value="<?php echo esc_attr( $purge_url ); ?>" />
+		</p>
+		<p><code>curl -s "<?php echo esc_html( $purge_url ); ?>"</code></p>
+
+		<?php if ( $with_host_example ) : ?>
+			<?php
+			$hosts        = $this->get_network_hosts();
+			$example_host = ! empty( $hosts ) ? reset( $hosts ) : 'example.com';
+			?>
 			<p>
 			<?php
 			echo wp_kses(
@@ -738,19 +767,19 @@ class Varnish_Network_Purge {
 			?>
 			</p>
 			<p><code>curl -s "<?php echo esc_html( add_query_arg( 'host', $example_host, $purge_url ) ); ?>"</code></p>
+		<?php endif; ?>
 
-			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"
-				onsubmit="return confirm('<?php echo esc_js( __( 'Regenerate the token? Existing URLs will stop working.', 'varnish-network-purge' ) ); ?>');">
-				<input type="hidden" name="action" value="vnp_regen_token" />
-				<?php wp_nonce_field( 'vnp_regen_token' ); ?>
-				<?php submit_button( __( 'Regenerate token', 'varnish-network-purge' ), 'secondary', 'submit', false ); ?>
-			</form>
-		</div>
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"
+			onsubmit="return confirm('<?php echo esc_js( __( 'Regenerate the token? Existing URLs will stop working.', 'varnish-network-purge' ) ); ?>');">
+			<input type="hidden" name="action" value="vnp_regen_token" />
+			<?php wp_nonce_field( 'vnp_regen_token' ); ?>
+			<?php submit_button( __( 'Regenerate token', 'varnish-network-purge' ), 'secondary', 'submit', false ); ?>
+		</form>
 		<?php
 	}
 
 	public function handle_purge_all() {
-		if ( ! current_user_can( 'manage_network' ) ) {
+		if ( ! current_user_can( $this->manage_cap() ) ) {
 			wp_die( esc_html__( 'Action not allowed.', 'varnish-network-purge' ) );
 		}
 		check_admin_referer( 'vnp_purge_all' );
@@ -778,7 +807,7 @@ class Varnish_Network_Purge {
 	}
 
 	public function handle_regen_token() {
-		if ( ! current_user_can( 'manage_network' ) ) {
+		if ( ! current_user_can( $this->manage_cap() ) ) {
 			wp_die( esc_html__( 'Action not allowed.', 'varnish-network-purge' ) );
 		}
 		check_admin_referer( 'vnp_regen_token' );
@@ -820,6 +849,11 @@ class Varnish_Network_Purge {
 				<?php wp_nonce_field( 'vnp_purge_current' ); ?>
 				<?php submit_button( __( "Purge this site's cache", 'varnish-network-purge' ), 'primary large' ); ?>
 			</form>
+
+			<?php if ( ! is_multisite() ) : ?>
+				<hr />
+				<?php $this->render_token_section( false ); ?>
+			<?php endif; ?>
 		</div>
 		<?php
 	}
