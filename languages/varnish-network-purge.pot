@@ -93,3 +93,18 @@ msgstr ""
 #. translators: 1: target label, 2: successful requests, 3: total requests
 msgid "Varnish cache purged — %1$s. %2$d / %3$d PURGE requests succeeded."
 msgstr ""
+
+msgid "Cache warm-up"
+msgstr ""
+
+msgid "A purge empties the cache: the next visit to each page is slow. Warm-up requests the pages listed in the XML sitemap in the background to refill it."
+msgstr ""
+
+msgid "Warm up the cache"
+msgstr ""
+
+msgid "Cache warm-up scheduled: the pages of the sitemap will be requested in the background within a few seconds."
+msgstr ""
+
+msgid "The cache warm-up could not be scheduled."
+msgstr ""

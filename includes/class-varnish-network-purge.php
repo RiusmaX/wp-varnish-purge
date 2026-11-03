@@ -32,6 +32,24 @@ class Varnish_Network_Purge {
 	/** Number of parallel PURGE requests per curl_multi batch. */
 	const BATCH_SIZE = 50;
 
+	/** WP-Cron hook of the cache warm-up event. */
+	const WARMUP_HOOK = 'vnp_warmup_event';
+
+	/** Prefix of the pending warm-up work transient (suffixed with the host hash). */
+	const WARMUP_STATE_KEY = 'vnp_warmup_';
+
+	/** Delay (seconds) between a purge and its warm-up event. */
+	const WARMUP_DELAY_SEC = 5;
+
+	/** Default maximum number of URLs warmed per host. */
+	const WARMUP_DEFAULT_LIMIT = 300;
+
+	/** Default number of parallel warm-up requests. */
+	const WARMUP_CONCURRENCY = 4;
+
+	/** Default pause (milliseconds) between two warm-up batches. */
+	const WARMUP_PAUSE_MS = 250;
+
 	/** @var Varnish_Network_Purge|null */
 	private static $instance = null;
 
@@ -81,6 +99,10 @@ class Varnish_Network_Purge {
 		add_action( 'wpfc_clear_all_cache', array( $this, 'on_wpfc_clear_all' ) );
 		add_action( 'wpfc_delete_cache', array( $this, 'on_wpfc_clear_all' ) );
 		add_action( 'wpfc_clear_post_cache_by_id', array( $this, 'on_wpfc_clear_post' ), 10, 2 );
+
+		// Cache warm-up (WP-Cron event + settings-page button).
+		add_action( self::WARMUP_HOOK, array( $this, 'run_warmup_event' ) );
+		add_action( 'admin_post_vnp_warmup', array( $this, 'handle_warmup' ) );
 
 		// Queued purges are flushed once, after everything has been saved.
 		add_action( 'shutdown', array( $this, 'flush_queue' ) );
@@ -304,7 +326,9 @@ class Varnish_Network_Purge {
 				);
 			}
 		}
-		return $this->send_purge_requests( $requests );
+		$results = $this->send_purge_requests( $requests );
+		$this->schedule_warmup_hosts( $hosts );
+		return $results;
 	}
 
 	/**
@@ -321,7 +345,9 @@ class Varnish_Network_Purge {
 				'regex' => false,
 			);
 		}
-		return $this->send_purge_requests( $requests );
+		$results = $this->send_purge_requests( $requests );
+		$this->schedule_warmup_urls( $urls );
+		return $results;
 	}
 
 	/**
@@ -622,9 +648,494 @@ class Varnish_Network_Purge {
 			);
 		}
 
+		$purged_urls  = array();
+		foreach ( $requests as $request ) {
+			if ( empty( $request['regex'] ) ) {
+				$purged_urls[] = $request['url'];
+			}
+		}
+		$wiped_hosts = array_keys( $this->queue_hosts );
+
 		$this->queue       = array();
 		$this->queue_hosts = array();
 		$this->send_purge_requests( $requests );
+		$this->schedule_warmup_hosts( $wiped_hosts );
+		$this->schedule_warmup_urls( $purged_urls );
+	}
+
+	/* --------------------------------------------------------------------- */
+	/* Cache warm-up                                                         */
+	/*                                                                       */
+	/* A purge empties Varnish, so the next visitor pays the full WordPress  */
+	/* render. When enabled (VNP_WARMUP / vnp_warmup_enabled) the plugin     */
+	/* schedules a one-off WP-Cron event that requests the purged URLs (or,  */
+	/* after a whole-site purge, the URLs of the XML sitemap) to refill the  */
+	/* cache, outside the administrator's request. A failure here never      */
+	/* breaks anything and never triggers another purge.                     */
+	/* --------------------------------------------------------------------- */
+
+	/**
+	 * Whether the automatic warm-up after purges is enabled.
+	 *
+	 * @return bool
+	 */
+	private function warmup_enabled() {
+		$enabled = defined( 'VNP_WARMUP' ) ? (bool) VNP_WARMUP : false;
+		return (bool) apply_filters( 'vnp_warmup_enabled', $enabled );
+	}
+
+	/**
+	 * Transient key holding the pending warm-up work of a host.
+	 *
+	 * @param string $host Domain.
+	 * @return string
+	 */
+	private function warmup_state_key( $host ) {
+		return self::WARMUP_STATE_KEY . md5( strtolower( $host ) );
+	}
+
+	/**
+	 * Schedule a warm-up of $host. Pending work of the same host is merged
+	 * into one single event (no second event while one is already planned).
+	 *
+	 * @param string        $host Domain of the site.
+	 * @param string[]|null $urls Exact URLs to warm, or null to warm the sitemap URLs.
+	 * @return bool True when work is pending (new or already planned).
+	 */
+	private function schedule_warmup( $host, $urls = null ) {
+		$host = strtolower( trim( (string) $host ) );
+		if ( '' === $host ) {
+			return false;
+		}
+
+		// WP-Cron is per site: schedule in the blog that owns the host.
+		$switched = false;
+		if ( is_multisite() && $host !== strtolower( $this->current_host() ) ) {
+			$sites = get_sites( array( 'domain' => $host, 'number' => 1, 'deleted' => 0, 'archived' => 0, 'spam' => 0 ) );
+			if ( empty( $sites ) ) {
+				return false;
+			}
+			switch_to_blog( (int) $sites[0]->blog_id );
+			$switched = true;
+		}
+
+		$key   = $this->warmup_state_key( $host );
+		$state = get_site_transient( $key );
+		if ( ! is_array( $state ) ) {
+			$state = array( 'full' => false, 'urls' => array() );
+		}
+		if ( null === $urls ) {
+			$state['full'] = true;
+		} else {
+			foreach ( $urls as $url ) {
+				if ( is_string( $url ) && '' !== $url ) {
+					$state['urls'][ $url ] = true;
+				}
+			}
+			if ( count( $state['urls'] ) > 1000 ) {
+				$state['urls'] = array_slice( $state['urls'], 0, 1000, true );
+			}
+		}
+		set_site_transient( $key, $state, HOUR_IN_SECONDS );
+
+		$args   = array( $host );
+		$result = true;
+		if ( ! wp_next_scheduled( self::WARMUP_HOOK, $args ) ) {
+			$result = false !== wp_schedule_single_event( time() + self::WARMUP_DELAY_SEC, self::WARMUP_HOOK, $args );
+		}
+
+		if ( $switched ) {
+			restore_current_blog();
+		}
+		return $result;
+	}
+
+	/**
+	 * Schedule warm-ups for exact URLs that were just purged (grouped by host).
+	 *
+	 * @param string[] $urls Absolute URLs.
+	 */
+	private function schedule_warmup_urls( array $urls ) {
+		if ( ! $this->warmup_enabled() ) {
+			return;
+		}
+		$by_host = array();
+		foreach ( $urls as $url ) {
+			$host = is_string( $url ) ? wp_parse_url( $url, PHP_URL_HOST ) : null;
+			if ( is_string( $host ) && '' !== $host ) {
+				$by_host[ strtolower( $host ) ][] = $url;
+			}
+		}
+		foreach ( $by_host as $host => $host_urls ) {
+			$this->schedule_warmup( $host, $host_urls );
+		}
+	}
+
+	/**
+	 * Schedule sitemap warm-ups for hosts that were just wiped.
+	 *
+	 * @param string[] $hosts Domains.
+	 */
+	private function schedule_warmup_hosts( array $hosts ) {
+		if ( ! $this->warmup_enabled() ) {
+			return;
+		}
+		foreach ( $hosts as $host ) {
+			$this->schedule_warmup( $host, null );
+		}
+	}
+
+	/**
+	 * WP-Cron callback: warm the pending URLs of a host. Never throws.
+	 *
+	 * @param string $host Domain.
+	 */
+	public function run_warmup_event( $host ) {
+		try {
+			$host  = strtolower( trim( (string) $host ) );
+			$key   = $this->warmup_state_key( $host );
+			$state = get_site_transient( $key );
+			delete_site_transient( $key );
+			if ( '' === $host || ! is_array( $state ) ) {
+				return;
+			}
+
+			$urls = array_keys( isset( $state['urls'] ) && is_array( $state['urls'] ) ? $state['urls'] : array() );
+			if ( ! empty( $state['full'] ) ) {
+				$urls = array_merge( $this->collect_sitemap_urls( $host ), $urls );
+			}
+			$summary = $this->warm_urls( $host, $urls );
+
+			error_log( sprintf(
+				'[varnish-network-purge] warmup host=%s urls=%d ok=%d failed=%d duration_ms=%d',
+				$host,
+				$summary['total'],
+				$summary['ok'],
+				$summary['failed'],
+				$summary['duration_ms']
+			) );
+		} catch ( \Throwable $e ) {
+			error_log( '[varnish-network-purge] warmup failed host=' . ( is_string( $host ) ? $host : '' ) . ' error=' . $e->getMessage() );
+		}
+	}
+
+	/**
+	 * Per-host URL limit.
+	 *
+	 * @param string   $host     Domain.
+	 * @param int|null $override Explicit limit (WP-CLI), or null.
+	 * @return int
+	 */
+	private function warmup_limit( $host, $override = null ) {
+		$limit = null !== $override ? (int) $override : self::WARMUP_DEFAULT_LIMIT;
+		$limit = (int) apply_filters( 'vnp_warmup_limit', $limit, $host );
+		return max( 0, $limit );
+	}
+
+	/**
+	 * Keep only valid, same-host, deduplicated http(s) URLs (fragments dropped).
+	 *
+	 * @param string[] $urls Candidate URLs.
+	 * @param string   $host Domain.
+	 * @return string[]
+	 */
+	private function filter_same_host_urls( array $urls, $host ) {
+		$out = array();
+		foreach ( $urls as $url ) {
+			if ( ! is_string( $url ) ) {
+				continue;
+			}
+			$url = trim( $url );
+			$pos = strpos( $url, '#' );
+			if ( false !== $pos ) {
+				$url = substr( $url, 0, $pos );
+			}
+			$parts = wp_parse_url( $url );
+			if ( empty( $parts['scheme'] ) || empty( $parts['host'] )
+				|| ! in_array( strtolower( $parts['scheme'] ), array( 'http', 'https' ), true )
+				|| strtolower( $parts['host'] ) !== $host ) {
+				continue;
+			}
+			$out[ $url ] = true;
+		}
+		return array_keys( $out );
+	}
+
+	/**
+	 * Read the sitemap of $host and return the page URLs it lists: tries
+	 * /sitemap_index.xml (Rank Math, Yoast) then /wp-sitemap.xml (WordPress),
+	 * follows one level of sub-sitemaps, stops at the per-host limit. Returns
+	 * an array without the home page when no sitemap is usable.
+	 *
+	 * @param string   $host  Domain.
+	 * @param int|null $limit Explicit limit, or null for the filtered default.
+	 * @return string[]
+	 */
+	private function collect_sitemap_urls( $host, $limit = null ) {
+		$limit = $this->warmup_limit( $host, $limit );
+		$base  = 'https://' . $host;
+		$urls  = array( $base . '/' );
+
+		foreach ( array( '/sitemap_index.xml', '/wp-sitemap.xml' ) as $path ) {
+			$root = $this->fetch_sitemap( $base . $path );
+			if ( null === $root ) {
+				continue;
+			}
+
+			$locs = $this->sitemap_locs( $root );
+			if ( 'sitemapindex' === $root->getName() ) {
+				$children = $this->filter_same_host_urls( $locs, $host );
+				$children = array_slice( $children, 0, 50 );
+				$locs     = array();
+				foreach ( $children as $child ) {
+					if ( count( $locs ) >= $limit ) {
+						break;
+					}
+					$sub = $this->fetch_sitemap( $child );
+					if ( null !== $sub && 'urlset' === $sub->getName() ) {
+						$locs = array_merge( $locs, $this->sitemap_locs( $sub ) );
+					}
+					$this->warmup_pause();
+				}
+			}
+
+			$locs = $this->filter_same_host_urls( $locs, $host );
+			if ( ! empty( $locs ) ) {
+				$urls = array_merge( $urls, $locs );
+				break;
+			}
+		}
+
+		return $urls;
+	}
+
+	/**
+	 * Fetch and parse one XML sitemap.
+	 *
+	 * @param string $url Sitemap URL.
+	 * @return SimpleXMLElement|null Null on non-200, network error or invalid XML.
+	 */
+	private function fetch_sitemap( $url ) {
+		$res = $this->http_get_batch( array( $url ), true, 15 );
+		if ( empty( $res ) || 200 !== $res[0]['code'] || '' !== $res[0]['err'] || '' === $res[0]['body'] ) {
+			return null;
+		}
+
+		$body = $res[0]['body'];
+		if ( false !== stripos( $body, '<!DOCTYPE' ) || false !== stripos( $body, '<!ENTITY' ) ) {
+			return null; // Never parse DTDs or entities from a remote document.
+		}
+		if ( ! function_exists( 'simplexml_load_string' ) ) {
+			return null;
+		}
+
+		$previous = libxml_use_internal_errors( true );
+		$xml      = simplexml_load_string( $body, 'SimpleXMLElement', LIBXML_NONET );
+		libxml_clear_errors();
+		libxml_use_internal_errors( $previous );
+
+		if ( ! $xml instanceof SimpleXMLElement || ! in_array( $xml->getName(), array( 'sitemapindex', 'urlset' ), true ) ) {
+			return null;
+		}
+		return $xml;
+	}
+
+	/**
+	 * Every <loc> value of a sitemap document (namespace-agnostic).
+	 *
+	 * @param SimpleXMLElement $xml Parsed sitemap.
+	 * @return string[]
+	 */
+	private function sitemap_locs( SimpleXMLElement $xml ) {
+		$nodes = $xml->xpath( '//*[local-name()="loc"]' );
+		$locs  = array();
+		if ( is_array( $nodes ) ) {
+			foreach ( $nodes as $node ) {
+				$locs[] = trim( (string) $node );
+			}
+		}
+		return $locs;
+	}
+
+	/**
+	 * Short pause between batches (anti-burst protections).
+	 */
+	private function warmup_pause() {
+		$ms = (int) apply_filters( 'vnp_warmup_pause_ms', self::WARMUP_PAUSE_MS );
+		if ( $ms > 0 ) {
+			usleep( min( $ms, 5000 ) * 1000 );
+		}
+	}
+
+	/**
+	 * Request URLs to fill the cache: GET, no cookie, no redirect followed,
+	 * small curl_multi batches with a pause in between.
+	 *
+	 * @param string   $host  Domain; only URLs of this host are requested.
+	 * @param string[] $urls  Candidate URLs.
+	 * @param int|null $limit Explicit limit, or null for the filtered default.
+	 * @return array { total, ok, failed, codes: array<string,int>, duration_ms }
+	 */
+	private function warm_urls( $host, array $urls, $limit = null ) {
+		$started = microtime( true );
+		$summary = array( 'total' => 0, 'ok' => 0, 'failed' => 0, 'codes' => array(), 'duration_ms' => 0 );
+
+		$urls = apply_filters( 'vnp_warmup_urls', array_values( array_unique( $urls ) ), $host );
+		$urls = is_array( $urls ) ? $this->filter_same_host_urls( $urls, $host ) : array();
+		$urls = array_slice( $urls, 0, $this->warmup_limit( $host, $limit ) );
+
+		if ( ! empty( $urls ) && function_exists( 'curl_multi_init' ) ) {
+			if ( function_exists( 'set_time_limit' ) ) {
+				@set_time_limit( 0 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			}
+			$size = (int) apply_filters( 'vnp_warmup_concurrency', self::WARMUP_CONCURRENCY );
+			$size = max( 1, min( 20, $size ) );
+
+			foreach ( array_chunk( $urls, $size ) as $i => $batch ) {
+				if ( $i > 0 ) {
+					$this->warmup_pause();
+				}
+				foreach ( $this->http_get_batch( $batch, false, 20 ) as $r ) {
+					$summary['total']++;
+					$label = '' !== $r['err'] ? 'error' : (string) $r['code'];
+					$summary['codes'][ $label ] = ( isset( $summary['codes'][ $label ] ) ? $summary['codes'][ $label ] : 0 ) + 1;
+					if ( '' === $r['err'] && $r['code'] >= 200 && $r['code'] < 400 ) {
+						$summary['ok']++;
+					} else {
+						$summary['failed']++;
+					}
+				}
+			}
+		}
+
+		$summary['duration_ms'] = (int) round( ( microtime( true ) - $started ) * 1000 );
+		return $summary;
+	}
+
+	/**
+	 * One curl_multi batch of GET requests (no cookie, redirects not
+	 * followed), resolved through the origin address when VNP_ORIGIN_IP is set.
+	 *
+	 * @param string[] $urls      URLs.
+	 * @param bool     $keep_body Keep the body (sitemaps, capped at 10 MB); otherwise discard it.
+	 * @param int      $timeout   Timeout per request, seconds.
+	 * @return array[] List of { url, code, err, body } in input order.
+	 */
+	private function http_get_batch( array $urls, $keep_body, $timeout ) {
+		$out = array();
+		if ( empty( $urls ) || ! function_exists( 'curl_multi_init' ) ) {
+			return $out;
+		}
+
+		$mh      = curl_multi_init();
+		$handles = array();
+		$bodies  = array();
+
+		foreach ( array_values( $urls ) as $i => $url ) {
+			$ch = curl_init( $url );
+			$bodies[ $i ] = '';
+			$opts = array(
+				CURLOPT_HTTPGET        => true,
+				CURLOPT_TIMEOUT        => (int) $timeout,
+				CURLOPT_CONNECTTIMEOUT => 5,
+				CURLOPT_SSL_VERIFYPEER => true,
+				CURLOPT_SSL_VERIFYHOST => 2,
+				CURLOPT_FOLLOWLOCATION => false,
+				CURLOPT_COOKIE         => '',
+				CURLOPT_ENCODING       => '',
+				CURLOPT_HTTPHEADER     => array( 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' ),
+				CURLOPT_USERAGENT      => 'Varnish-Network-Purge-Warmup/' . VNP_VERSION,
+				CURLOPT_WRITEFUNCTION  => function ( $handle, $chunk ) use ( $keep_body, $i, &$bodies ) {
+					if ( $keep_body ) {
+						if ( strlen( $bodies[ $i ] ) + strlen( $chunk ) > 10 * 1024 * 1024 ) {
+							return 0; // Abort: oversized document.
+						}
+						$bodies[ $i ] .= $chunk;
+					}
+					return strlen( $chunk );
+				},
+			);
+			curl_setopt_array( $ch, $opts );
+			$resolve = $this->get_resolve_entries( $url );
+			if ( ! empty( $resolve ) ) {
+				curl_setopt( $ch, CURLOPT_RESOLVE, $resolve );
+			}
+			curl_multi_add_handle( $mh, $ch );
+			$handles[ $i ] = array( 'ch' => $ch, 'url' => $url );
+		}
+
+		$running = null;
+		do {
+			curl_multi_exec( $mh, $running );
+			if ( $running > 0 ) {
+				curl_multi_select( $mh, 1.0 );
+			}
+		} while ( $running > 0 );
+
+		foreach ( $handles as $i => $h ) {
+			$out[] = array(
+				'url'  => $h['url'],
+				'code' => (int) curl_getinfo( $h['ch'], CURLINFO_HTTP_CODE ),
+				'err'  => (string) curl_error( $h['ch'] ),
+				'body' => $bodies[ $i ],
+			);
+			curl_multi_remove_handle( $mh, $h['ch'] );
+			curl_close( $h['ch'] );
+		}
+		curl_multi_close( $mh );
+
+		return $out;
+	}
+
+	/**
+	 * Synchronous warm-up of a whole site from its sitemap (WP-CLI).
+	 *
+	 * @param string   $host  Domain.
+	 * @param int|null $limit Explicit limit, or null for the filtered default.
+	 * @return array Summary, see warm_urls().
+	 */
+	public function warmup_now( $host, $limit = null ) {
+		return $this->warm_urls( $host, $this->collect_sitemap_urls( $host, $limit ), $limit );
+	}
+
+	/**
+	 * Wipe the cache of a host synchronously (WP-Cron warm-up scheduling
+	 * follows the usual rules). Used by WP-CLI.
+	 *
+	 * @param string $host Domain.
+	 * @return array[] Purge results.
+	 */
+	public function purge_now( $host ) {
+		$this->clear_local_host_cache( $host );
+		return $this->purge_hosts( array( $host ) );
+	}
+
+	/**
+	 * Hosts the current context may target (WP-CLI validation).
+	 *
+	 * @return string[]
+	 */
+	public function known_hosts() {
+		return $this->get_network_hosts();
+	}
+
+	/**
+	 * Settings-page button: schedule a warm-up of the current site.
+	 */
+	public function handle_warmup() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Action not allowed.', 'varnish-network-purge' ) );
+		}
+		check_admin_referer( 'vnp_warmup' );
+
+		$scheduled = $this->schedule_warmup( $this->current_host(), null );
+		$this->stash_message(
+			$scheduled
+				? __( 'Cache warm-up scheduled: the pages of the sitemap will be requested in the background within a few seconds.', 'varnish-network-purge' )
+				: __( 'The cache warm-up could not be scheduled.', 'varnish-network-purge' ),
+			$scheduled ? 'notice-success' : 'notice-error'
+		);
+		$this->redirect_back();
 	}
 
 	/* --------------------------------------------------------------------- */
@@ -884,6 +1395,15 @@ class Varnish_Network_Purge {
 				<?php submit_button( __( "Purge this site's cache", 'varnish-network-purge' ), 'primary large' ); ?>
 			</form>
 
+			<hr />
+			<h2><?php esc_html_e( 'Cache warm-up', 'varnish-network-purge' ); ?></h2>
+			<p><?php esc_html_e( 'A purge empties the cache: the next visit to each page is slow. Warm-up requests the pages listed in the XML sitemap in the background to refill it.', 'varnish-network-purge' ); ?></p>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+				<input type="hidden" name="action" value="vnp_warmup" />
+				<?php wp_nonce_field( 'vnp_warmup' ); ?>
+				<?php submit_button( __( 'Warm up the cache', 'varnish-network-purge' ), 'secondary' ); ?>
+			</form>
+
 			<?php if ( ! is_multisite() ) : ?>
 				<hr />
 				<?php $this->render_token_section( false ); ?>
@@ -996,6 +1516,19 @@ class Varnish_Network_Purge {
 	/* --------------------------------------------------------------------- */
 
 	/**
+	 * Store a plain message for the current user (shown as an admin notice).
+	 *
+	 * @param string $message Already translated message.
+	 * @param string $class   Notice CSS class.
+	 */
+	private function stash_message( $message, $class = 'notice-success' ) {
+		set_site_transient( self::NOTICE_KEY . get_current_user_id(), array(
+			'message' => $message,
+			'class'   => $class,
+		), 60 );
+	}
+
+	/**
 	 * Store a purge result for the current user.
 	 *
 	 * @param array[] $results     Purge results.
@@ -1017,6 +1550,15 @@ class Varnish_Network_Purge {
 			return;
 		}
 		delete_site_transient( $key );
+
+		if ( isset( $notice['message'] ) ) {
+			printf(
+				'<div class="notice %s is-dismissible"><p><strong>%s</strong></p></div>',
+				esc_attr( $notice['class'] ),
+				esc_html( $notice['message'] )
+			);
+			return;
+		}
 
 		$class   = ( $notice['total'] > 0 && $notice['ok'] === $notice['total'] ) ? 'notice-success' : 'notice-warning';
 		$message = sprintf(
@@ -1064,4 +1606,99 @@ class Varnish_Network_Purge {
 		}
 		return implode( "\n", $lines ) . "\n";
 	}
+}
+
+/**
+ * WP-CLI commands: `wp varnish-purge warmup|purge`.
+ */
+if ( defined( 'WP_CLI' ) && WP_CLI ) {
+
+	class Varnish_Network_Purge_CLI {
+
+		/**
+		 * Warm the cache of a site from its XML sitemap (synchronous). Works
+		 * even when VNP_WARMUP is false.
+		 *
+		 * ## OPTIONS
+		 *
+		 * [--host=<host>]
+		 * : Domain to warm. Defaults to the current site.
+		 *
+		 * [--limit=<n>]
+		 * : Maximum number of URLs (default: 300, filter vnp_warmup_limit).
+		 *
+		 * ## EXAMPLES
+		 *
+		 *     wp varnish-purge warmup --host=example.com --limit=100
+		 *
+		 * @param array $args       Positional arguments (unused).
+		 * @param array $assoc_args Associative arguments.
+		 */
+		public function warmup( $args, $assoc_args ) {
+			$plugin = Varnish_Network_Purge::instance();
+			$host   = $this->resolve_host( $assoc_args );
+			$limit  = isset( $assoc_args['limit'] ) ? max( 0, (int) $assoc_args['limit'] ) : null;
+
+			$summary = $plugin->warmup_now( $host, $limit );
+			if ( 0 === $summary['total'] ) {
+				WP_CLI::warning( "No URL warmed for {$host} (no sitemap found, empty, or limit 0)." );
+				return;
+			}
+
+			ksort( $summary['codes'] );
+			$codes = array();
+			foreach ( $summary['codes'] as $code => $count ) {
+				$codes[] = "{$code}x{$count}";
+			}
+			WP_CLI::success( sprintf(
+				'%s: %d URLs, %d ok, %d failed, codes: %s, %.1f s',
+				$host,
+				$summary['total'],
+				$summary['ok'],
+				$summary['failed'],
+				implode( ' ', $codes ),
+				$summary['duration_ms'] / 1000
+			) );
+		}
+
+		/**
+		 * Wipe the Varnish cache of a site.
+		 *
+		 * ## OPTIONS
+		 *
+		 * [--host=<host>]
+		 * : Domain to purge. Defaults to the current site.
+		 *
+		 * @param array $args       Positional arguments (unused).
+		 * @param array $assoc_args Associative arguments.
+		 */
+		public function purge( $args, $assoc_args ) {
+			$host    = $this->resolve_host( $assoc_args );
+			$results = Varnish_Network_Purge::instance()->purge_now( $host );
+			$ok      = count( array_filter( $results, function ( $r ) { return $r['ok']; } ) );
+			if ( $ok !== count( $results ) || 0 === $ok ) {
+				WP_CLI::error( "Purge of {$host}: {$ok}/" . count( $results ) . ' requests OK.' );
+			}
+			WP_CLI::success( "Purge of {$host}: {$ok}/" . count( $results ) . ' requests OK.' );
+		}
+
+		/**
+		 * @param array $assoc_args Associative arguments.
+		 * @return string
+		 */
+		private function resolve_host( array $assoc_args ) {
+			$plugin = Varnish_Network_Purge::instance();
+			$host   = isset( $assoc_args['host'] ) ? strtolower( trim( (string) $assoc_args['host'] ) ) : '';
+			if ( '' === $host ) {
+				$hosts = $plugin->known_hosts();
+				$host  = isset( $hosts[0] ) ? strtolower( $hosts[0] ) : '';
+			}
+			if ( '' === $host || ! in_array( $host, array_map( 'strtolower', $plugin->known_hosts() ), true ) ) {
+				WP_CLI::error( 'Unknown or missing host.' );
+			}
+			return $host;
+		}
+	}
+
+	WP_CLI::add_command( 'varnish-purge', 'Varnish_Network_Purge_CLI' );
 }

@@ -67,6 +67,43 @@ define( 'VNP_ORIGIN_IP', '127.0.0.1' );
 
 Each PURGE request then pins its host to that address (`CURLOPT_RESOLVE`, ports 443 and 80) while keeping the original URL, so the `Host` header and TLS certificate verification are unchanged. IPv4 and IPv6 are accepted (IPv6 is bracketed automatically); an invalid value is ignored. The `vnp_origin_ip` filter receives the constant value (or an empty string) and the host, and returns the address to use. Without an address, requests behave exactly as before.
 
+### Cache warm-up (optional)
+
+A purge empties Varnish, so the next visit to each page pays a full WordPress render. Warm-up requests pages again to refill the cache. It is **off by default**: without it, behavior is exactly as before. Enable it in `wp-config.php`:
+
+```php
+define( 'VNP_WARMUP', true );
+```
+
+The `vnp_warmup_enabled` filter receives the boolean and can override the constant.
+
+- **After a targeted purge** (content saved, single page purged): the exact URLs that were just purged are requested.
+- **After a whole-site purge** (button, admin bar, trigger URL, menu or theme change): the URLs of the sitemap are requested. The plugin reads `/sitemap_index.xml` (Rank Math, Yoast), falls back to `/wp-sitemap.xml` (WordPress core), and follows one level of sub-sitemaps. A missing sitemap (404), invalid XML or a document with a `DOCTYPE` is ignored: only the home page is requested.
+- **Outside the admin request**: a single WP-Cron event (`vnp_warmup_event`) runs a few seconds after the purge. Work for the same host is merged: no second event is scheduled while one is pending.
+- **Gentle on the origin**: GET requests through `curl_multi`, 4 at a time with a 250 ms pause between batches, 20 s timeout per page, no cookie, redirects are not followed, only URLs of the site's own host are requested. User-Agent: `Varnish-Network-Purge-Warmup/<version>`. Requests also use `VNP_ORIGIN_IP` when set.
+- **Failures are harmless**: errors are logged with `error_log()` and never trigger another purge.
+
+Filters:
+
+| Filter | Default | Purpose |
+| --- | --- | --- |
+| `vnp_warmup_enabled` | `VNP_WARMUP` (`false`) | Enable or disable automatic warm-up. |
+| `vnp_warmup_limit` | `300` | Maximum URLs per host (`$limit`, `$host`). |
+| `vnp_warmup_urls` | | Final list of URLs (`$urls`, `$host`). |
+| `vnp_warmup_concurrency` | `4` | Parallel requests per batch (1 to 20). |
+| `vnp_warmup_pause_ms` | `250` | Pause between batches, in milliseconds. |
+
+**Settings page**: *Settings → Varnish Cache* has a **Warm up the cache** button (capability `manage_options`, nonce-protected). It schedules the event, even when `VNP_WARMUP` is `false`.
+
+**WP-CLI** (registered only under WP-CLI):
+
+```bash
+wp varnish-purge warmup [--host=<host>] [--limit=<n>]   # synchronous, prints URL count, status codes and duration
+wp varnish-purge purge [--host=<host>]                  # wipe the cache of a site
+```
+
+`warmup` is an explicit call: it works even when `VNP_WARMUP` is `false`.
+
 ## Requirements
 
 - WordPress 5.6+ (single site or multisite), PHP 7.2+ with the cURL extension.

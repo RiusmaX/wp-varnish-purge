@@ -94,3 +94,18 @@ msgstr "tout le réseau"
 #. translators: 1: target label, 2: successful requests, 3: total requests
 msgid "Varnish cache purged — %1$s. %2$d / %3$d PURGE requests succeeded."
 msgstr "Cache Varnish vidé — %1$s. %2$d / %3$d requêtes PURGE réussies."
+
+msgid "Cache warm-up"
+msgstr "Préchauffage du cache"
+
+msgid "A purge empties the cache: the next visit to each page is slow. Warm-up requests the pages listed in the XML sitemap in the background to refill it."
+msgstr "Une purge vide le cache : la visite suivante de chaque page est lente. Le préchauffage redemande en arrière-plan les pages du plan du site XML pour le remplir."
+
+msgid "Warm up the cache"
+msgstr "Préchauffer le cache"
+
+msgid "Cache warm-up scheduled: the pages of the sitemap will be requested in the background within a few seconds."
+msgstr "Préchauffage du cache planifié : les pages du plan du site seront demandées en arrière-plan d’ici quelques secondes."
+
+msgid "The cache warm-up could not be scheduled."
+msgstr "Le préchauffage du cache n’a pas pu être planifié."
