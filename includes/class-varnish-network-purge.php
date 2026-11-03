@@ -325,6 +325,36 @@ class Varnish_Network_Purge {
 	}
 
 	/**
+	 * Build CURLOPT_RESOLVE entries pinning the request host to the origin
+	 * address configured through VNP_ORIGIN_IP and/or the vnp_origin_ip filter.
+	 * The URL (and therefore TLS verification and the Host header) is unchanged.
+	 *
+	 * @param string $url Purge URL.
+	 * @return string[] CURLOPT_RESOLVE entries, empty when no valid address is set.
+	 */
+	private function get_resolve_entries( $url ) {
+		$host = wp_parse_url( $url, PHP_URL_HOST );
+		if ( ! is_string( $host ) || '' === $host ) {
+			return array();
+		}
+
+		$ip = defined( 'VNP_ORIGIN_IP' ) ? (string) VNP_ORIGIN_IP : '';
+		$ip = trim( (string) apply_filters( 'vnp_origin_ip', $ip, $host ) );
+		if ( '' === $ip || false === filter_var( $ip, FILTER_VALIDATE_IP ) ) {
+			return array();
+		}
+
+		if ( false !== strpos( $ip, ':' ) ) {
+			$ip = '[' . $ip . ']';
+		}
+
+		return array(
+			$host . ':443:' . $ip,
+			$host . ':80:' . $ip,
+		);
+	}
+
+	/**
 	 * Send PURGE requests in parallel batches via curl_multi.
 	 *
 	 * @param array[] $requests List of { url: string, regex: bool }.
@@ -346,6 +376,10 @@ class Varnish_Network_Purge {
 				$headers = array();
 				if ( ! empty( $request['regex'] ) ) {
 					$headers[] = 'X-Purge-Method: regex';
+				}
+				$resolve = $this->get_resolve_entries( $request['url'] );
+				if ( ! empty( $resolve ) ) {
+					curl_setopt( $ch, CURLOPT_RESOLVE, $resolve );
 				}
 				curl_setopt_array( $ch, array(
 					CURLOPT_CUSTOMREQUEST  => 'PURGE',

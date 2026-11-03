@@ -57,6 +57,16 @@ Before deploying: fill the `purgers` ACL with the outbound IPs of your web serve
 2. Multisite: in **Network Admin → Plugins**, click **Network Activate**. Single site: activate it in **Plugins**.
 3. Open **Network → Settings → Varnish Cache** (multisite) or **Settings → Varnish Cache** (single site) to grab the URL/token.
 
+### Origin address (sites behind a CDN)
+
+When the site name resolves to a CDN or proxy (for example Cloudflare) in front of Varnish, PURGE requests sent to that name never reach Varnish. Set the address of the Varnish origin in `wp-config.php`:
+
+```php
+define( 'VNP_ORIGIN_IP', '127.0.0.1' );
+```
+
+Each PURGE request then pins its host to that address (`CURLOPT_RESOLVE`, ports 443 and 80) while keeping the original URL, so the `Host` header and TLS certificate verification are unchanged. IPv4 and IPv6 are accepted (IPv6 is bracketed automatically); an invalid value is ignored. The `vnp_origin_ip` filter receives the constant value (or an empty string) and the host, and returns the address to use. Without an address, requests behave exactly as before.
+
 ## Requirements
 
 - WordPress 5.6+ (single site or multisite), PHP 7.2+ with the cURL extension.
