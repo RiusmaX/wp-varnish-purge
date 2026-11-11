@@ -88,7 +88,7 @@ Filters:
 | Filter | Default | Purpose |
 | --- | --- | --- |
 | `vnp_warmup_enabled` | `VNP_WARMUP` (`false`) | Enable or disable automatic warm-up. |
-| `vnp_warmup_limit` | `300` | Maximum URLs per host (`$limit`, `$host`). |
+| `vnp_warmup_limit` | `600` | Maximum URLs per host (`$limit`, `$host`). |
 | `vnp_warmup_urls` | | Final list of URLs (`$urls`, `$host`). |
 | `vnp_warmup_concurrency` | `4` | Parallel requests per batch (1 to 20). |
 | `vnp_warmup_pause_ms` | `250` | Pause between batches, in milliseconds. |
@@ -103,6 +103,8 @@ wp varnish-purge purge [--host=<host>]                  # wipe the cache of a si
 ```
 
 `warmup` is an explicit call: it works even when `VNP_WARMUP` is `false`.
+
+Only page `<loc>` entries are read from sitemaps (image/video entries are ignored). Standalone test of that logic: `php tests/sitemap-locs-test.php` (needs the PHP `SimpleXML` extension).
 
 ## Requirements
 

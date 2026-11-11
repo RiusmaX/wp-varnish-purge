@@ -42,7 +42,7 @@ class Varnish_Network_Purge {
 	const WARMUP_DELAY_SEC = 5;
 
 	/** Default maximum number of URLs warmed per host. */
-	const WARMUP_DEFAULT_LIMIT = 300;
+	const WARMUP_DEFAULT_LIMIT = 600;
 
 	/** Default number of parallel warm-up requests. */
 	const WARMUP_CONCURRENCY = 4;
@@ -941,13 +941,15 @@ class Varnish_Network_Purge {
 	}
 
 	/**
-	 * Every <loc> value of a sitemap document (namespace-agnostic).
+	 * Every page / sub-sitemap <loc> of a sitemap document (namespace-agnostic).
+	 * Only <loc> that are direct children of <url> or <sitemap> are kept, so
+	 * <image:loc>, <video:*> and <xhtml:link> entries are ignored.
 	 *
 	 * @param SimpleXMLElement $xml Parsed sitemap.
 	 * @return string[]
 	 */
 	private function sitemap_locs( SimpleXMLElement $xml ) {
-		$nodes = $xml->xpath( '//*[local-name()="loc"]' );
+		$nodes = $xml->xpath( '//*[local-name()="url" or local-name()="sitemap"]/*[local-name()="loc"]' );
 		$locs  = array();
 		if ( is_array( $nodes ) ) {
 			foreach ( $nodes as $node ) {
@@ -1625,7 +1627,7 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		 * : Domain to warm. Defaults to the current site.
 		 *
 		 * [--limit=<n>]
-		 * : Maximum number of URLs (default: 300, filter vnp_warmup_limit).
+		 * : Maximum number of URLs (default: 600, filter vnp_warmup_limit).
 		 *
 		 * ## EXAMPLES
 		 *
